@@ -6,7 +6,7 @@ import argparse
 
 # --- CLI args / site name ---
 parser = argparse.ArgumentParser(description="EQC report generator")
-parser.add_argument("--input", "-i", default="abc.csv", help="Input EQC CSV file")
+parser.add_argument("--input", "-i", default="Combined_EQC.csv", help="Input EQC CSV file")
 args = parser.parse_args()
 eqc_file = args.input
 
@@ -100,23 +100,33 @@ if "Status" in df.columns:
 alerts = []
 today = pd.Timestamp.today()
 
-# 1. REDO > 3 days
-redo_col = df.get("EQC Stage Status", pd.Series(dtype=str)).astype(str).str.upper()
+# 1. REDO > 3 days — include Location L2 (floor) and L3 (flat) for context
+# In our data, REDO appears in the generic 'Status' column; ensure alignment with df.index
+redo_col = df.get("Status", pd.Series(["" for _ in range(len(df))], index=df.index)).astype(str).str.upper()
 redo_df = df[redo_col == "REDO"]
 if not redo_df.empty:
-    max_dates = redo_df.groupby(["Eqc Type", "Location L1"])["Date"].max()
-    for (eqc, bldg), last_date in max_dates.items():
+    # group by Eqc Type + Location L1/L2/L3 so we can include floor/flat in alerts
+    max_dates = redo_df.groupby(["Eqc Type", "Location L1", "Location L2", "Location L3"])["Date"].max()
+    for keys, last_date in max_dates.items():
+        eqc = keys[0]
+        loc_parts = [k for k in keys[1:] if k and str(k).strip()]
+        loc_label = " / ".join(loc_parts) if loc_parts else (keys[1] or "UNKNOWN")
         if pd.notna(last_date) and (today - last_date).days > 3:
-            alerts.append(f"ALERT: {eqc} in {bldg} is REDO for more than 3 days (last: {last_date.date()})")
+            alerts.append(f"ALERT: {eqc} in {loc_label} is REDO for more than 3 days (last: {last_date.date()})")
 
-# 2. IN_PROGRESS > 3 weeks without stage change
-status_col = df.get("Status", pd.Series(dtype=str)).astype(str)
+# 2. IN_PROGRESS > 3 weeks without stage change (include floor/flat)
+status_col = df.get("Status", pd.Series(["" for _ in range(len(df))], index=df.index)).astype(str).str.upper()
 inprog_df = df[status_col == "IN_PROGRESS"]
 if not inprog_df.empty:
-    min_dates = inprog_df.groupby(["Eqc Type", "Location L1", "Stage_Norm"])["Date"].min()
-    for (eqc, bldg, stage), first_date in min_dates.items():
+    # group by Eqc Type + Location L1/L2/L3 + Stage_Norm
+    min_dates = inprog_df.groupby(["Eqc Type", "Location L1", "Location L2", "Location L3", "Stage_Norm"])["Date"].min()
+    for keys, first_date in min_dates.items():
+        eqc = keys[0]
+        stage = keys[4]
+        loc_parts = [k for k in keys[1:4] if k and str(k).strip()]
+        loc_label = " / ".join(loc_parts) if loc_parts else (keys[1] or "UNKNOWN")
         if pd.notna(first_date) and (today - first_date).days > 21:
-            alerts.append(f"ALERT: {eqc} in {bldg} stuck in {stage} for more than 3 weeks (since: {first_date.date()})")
+            alerts.append(f"ALERT: {eqc} in {loc_label} stuck in {stage} for more than 3 weeks (since: {first_date.date()})")
 
 # Write alerts file (only alerts output requested)
 pd.DataFrame(alerts, columns=["Alerts"]).to_csv(alerts_filename, index=False)
@@ -336,11 +346,17 @@ try:
             s_norm = s.lower()
             # quick pattern fixes for commonly miswritten names
             fixes = {
-                r'painting.*internal': 'Painting works',
-                r'painting.*external': 'Painting works',
-                r'waterproof.*boxtype': 'Waterproofing works',
-                r'waterproof.*toilet': 'Waterproofing works',
-                r'tiling.*kitchen.*platform.*ss': 'Tiling - Kitchen Platform',
+                r'painting.*internal': 'Painting Works : Internal',
+                r'painting.*external': 'Painting Works : External',
+                r'painting\s*works\s*:\s*internal': 'Painting Works : Internal',
+                r'painting\s*works\s*:\s*external': 'Painting Works : External',
+                r'waterproof.*boxtype': 'Waterproofing works: Toilet and Skirting',
+                r'waterproof.*toilet': 'Waterproofing works: Toilet and Skirting',
+                r'waterproof.*skirting': 'Waterproofing works: Toilet and Skirting',
+                r'tiling.*kitchen.*platform': 'Tiling - Kitchen Platform',
+                r'tiling.*kitchen.*sink': 'Tiling - Kitchen Platform',
+                r'tiling[-\s]*toilet.*dado': 'Tiling - Toilet Dado',
+                r'kitchen\s*dado': 'Kitchen Dado Checklist',
             }
             for pat, name in fixes.items():
                 if re.search(pat, s_norm):
@@ -465,7 +481,19 @@ try:
                 startrow = 3
                 # wide_un_reset already has the 'Checklists' leftmost column
                 # write with index=True so pandas preserves MultiIndex headers correctly
-                wide_un_reset.to_excel(writer, sheet_name='Summary', startrow=startrow, index=True)
+                # For Excel, flatten MultiIndex columns into single row labels (e.g. Building - Stage)
+                excel_df = wide_un_reset.copy()
+                # If original wide_un had MultiIndex columns, create flattened labels
+                if isinstance(wide_un.columns, pd.MultiIndex):
+                    new_cols = []
+                    for c in wide_un_reset.columns:
+                        if isinstance(c, tuple):
+                            new_cols.append(f"{c[0]} - {c[1]}")
+                        else:
+                            new_cols.append(str(c))
+                    excel_df.columns = new_cols
+                # write the flattened DataFrame to Excel
+                excel_df.to_excel(writer, sheet_name='Summary', startrow=startrow, index=False)
                 ws = writer.sheets['Summary']
 
                 # compute header rows and table bounds
@@ -538,17 +566,29 @@ try:
                 except Exception:
                     pass
 
-                # If we have MultiIndex columns, merge the top-level (building) header cells
+                # Merge top-level building headers by parsing flattened labels (format: 'Building - Stage')
                 try:
-                    cols = list(wide_un.columns)
-                    index_depth = 1
-                    # Excel columns are 1-indexed; account for the leftmost 'Checklists' column
+                    cols = list(excel_df.columns)
+                    # Excel columns are 1-indexed; leftmost data column is column 1
                     left_offset = 1
+                    # ensure the leftmost header cell shows 'Checklists' so it's obvious in the Excel view
+                    try:
+                        chk_cell = ws.cell(row=header_top, column=1)
+                        if not chk_cell.value:
+                            chk_cell.value = 'Checklists'
+                            chk_cell.font = Font(bold=True)
+                            chk_cell.alignment = Alignment(horizontal='center', vertical='center')
+                    except Exception:
+                        pass
+
                     run_start = None
                     run_value = None
                     run_end = None
                     for i in range(len(cols)):
-                        top = cols[i][0] if isinstance(cols[i], tuple) else cols[i]
+                        label = cols[i]
+                        # parse building from 'Building - Stage' format; fallback to full label
+                        parts = str(label).split(' - ', 1)
+                        top = parts[0] if len(parts) > 1 else label
                         excel_col = left_offset + i
                         if run_value is None:
                             run_value = top

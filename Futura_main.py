@@ -66,7 +66,7 @@ df["Stage_Norm"] = pd.Categorical(df["Stage_Norm"], categories=stage_order, orde
 # --- Pivot table (Eqc Type as index, Building + Stage as columns) ---
 # Use groupby + unstack to avoid pandas grouper errors
 summary = (
-    df.groupby(["Eqc Type", "Location L1", "Stage_Norm"])['Eqc Type']
+    df.groupby(["Eqc Type", "Location L1", "Stage_Norm"], observed=True)['Eqc Type']
     .count()
     .unstack(level=[1, 2], fill_value=0)
 )
@@ -87,7 +87,7 @@ for bldg in df.get("Location L1", pd.Series(dtype=str)).unique():
 
 # --- Add overall totals across buildings ---
 totals = (
-    df.groupby(["Eqc Type", "Stage_Norm"])['Eqc Type'].count().unstack(fill_value=0)
+    df.groupby(["Eqc Type", "Stage_Norm"], observed=True)['Eqc Type'].count().unstack(fill_value=0)
 )
 totals.columns = pd.MultiIndex.from_product([["Total"], totals.columns.astype(str)])
 summary = pd.concat([summary, totals], axis=1)
@@ -106,7 +106,12 @@ alerts = []
 today = pd.Timestamp.today()
 
 # 1. REDO > 3 days
-redo_col = df.get("EQC Stage Status", pd.Series(dtype=str)).astype(str).str.upper()
+redo_source = "EQC Stage Status" if "EQC Stage Status" in df.columns else ("Status" if "Status" in df.columns else None)
+if redo_source is not None:
+    redo_fallback = pd.Series([""] * len(df), index=df.index)
+    redo_col = df.get(redo_source, redo_fallback).astype(str).str.upper()
+else:
+    redo_col = pd.Series([""] * len(df), index=df.index)
 redo_df = df[redo_col == "REDO"]
 if not redo_df.empty:
     max_dates = redo_df.groupby(["Eqc Type", "Location L1"])["Date"].max()
@@ -115,7 +120,8 @@ if not redo_df.empty:
             alerts.append(f"ALERT: {eqc} in {bldg} is REDO for more than 3 days (last: {last_date.date()})")
 
 # 2. IN_PROGRESS > 3 weeks without stage change
-status_col = df.get("Status", pd.Series(dtype=str)).astype(str)
+status_fallback = pd.Series([""] * len(df), index=df.index)
+status_col = df.get("Status", status_fallback).astype(str).str.upper()
 inprog_df = df[status_col == "IN_PROGRESS"]
 if not inprog_df.empty:
     min_dates = inprog_df.groupby(["Eqc Type", "Location L1", "Stage_Norm"])["Date"].min()
@@ -364,23 +370,39 @@ try:
         for s in stage_order:
             agg[s] = pd.to_numeric(agg[s], errors='coerce').fillna(0).astype(int)
 
-        # Apply cumulative logic: Pre = Pre + During + Post; During = During + Post
+        # Apply new cumulative logic across tools:
+        # Pre = Pre + During + Post + Reinforcement + Shuttering + Other
+        # During = During + Post + Other
+        # Post = Post + Other
         if all(col in agg.columns for col in ['Pre', 'During', 'Post']):
-            agg['Pre'] = agg['Pre'] + agg['During'] + agg['Post']
-            agg['During'] = agg['During'] + agg['Post']
+            pre_components = [agg.get(x, 0) for x in ['Pre', 'During', 'Post', 'Reinforcement', 'Shuttering', 'Other']]
+            agg['Pre'] = sum(pre_components)
+            agg['During'] = agg.get('During', 0) + agg.get('Post', 0) + agg.get('Other', 0)
+            agg['Post'] = agg.get('Post', 0) + agg.get('Other', 0)
 
-        # Compute Total Count after cumulative transformation
-        agg['Total Count'] = agg[stage_order].sum(axis=1)
+        # Compute Total Count using only Pre/During/Post (avoid double-counting helper stages)
+        total_stage_cols = [c for c in ['Pre', 'During', 'Post'] if c in agg.columns]
+        if total_stage_cols:
+            agg['Total Count'] = agg[total_stage_cols].sum(axis=1)
+        else:
+            agg['Total Count'] = 0
 
         # Also add an overall BaseName total (across buildings)
-        overall = agg.groupby('BaseName')[stage_order].sum().reset_index()
+        stage_present = [s for s in ['Pre', 'During', 'Post'] if s in agg.columns]
+        # Fallback to stage_order if the above are missing for some reason
+        if not stage_present:
+            stage_present = [s for s in stage_order if s in agg.columns]
+        overall = agg.groupby('BaseName')[stage_present].sum().reset_index()
         overall['Building'] = 'ALL'
-        overall['Total Count'] = overall[stage_order].sum(axis=1)
+        if total_stage_cols:
+            overall['Total Count'] = overall[total_stage_cols].sum(axis=1)
+        else:
+            overall['Total Count'] = 0
 
         final_by_building = pd.concat([agg, overall], ignore_index=True, sort=False)
 
         # Reorder columns
-        cols_order = ['BaseName', 'Building'] + stage_order + ['Total Count']
+        cols_order = ['BaseName', 'Building'] + stage_present + ['Total Count']
         final_by_building = final_by_building[cols_order]
 
         # Save to CSV (this will replace the reference-style file; backup saved above)
@@ -388,11 +410,13 @@ try:
         print(f"✅ Wrote tidy per-building summary with collapsed names to {src_path} (backup -> {bak_path})")
         # Also produce a wide-format CSV with buildings as top-level columns and stages as sub-columns
         try:
-            # agg has columns: BaseName, Building, Pre, During, ...
-            wide_idx = agg.set_index(['BaseName', 'Building'])[stage_order]
+            # agg has columns: BaseName, Building, Pre, During, Post
+            stages_for_wide = [c for c in ['Pre', 'During', 'Post'] if c in agg.columns]
+            wide_idx = agg.set_index(['BaseName', 'Building'])[stages_for_wide]
             # unstack buildings -> columns (stage, building)
             # use final_by_building (which includes the 'ALL' aggregated row) to avoid missing totals
-            wide_idx = final_by_building.set_index(['BaseName', 'Building'])[stage_order]
+            stages_for_wide_fb = [c for c in ['Pre', 'During', 'Post'] if c in final_by_building.columns]
+            wide_idx = final_by_building.set_index(['BaseName', 'Building'])[stages_for_wide_fb]
             wide_un = wide_idx.unstack(level='Building', fill_value=0)
             # swap to (building, stage)
             wide_un.columns = wide_un.columns.swaplevel(0, 1)
