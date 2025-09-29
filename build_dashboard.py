@@ -234,7 +234,49 @@ def main(argv: List[str]) -> None:
         # No common alternates; keep as-is
         pass
 
-    eqc_res = eqc_summary_by_project(eqc_path, target, args.projects)
+    # --- Auto-detect & correct swapped inputs (heuristic) ---
+    def _read_head(path: str, max_cols: int = 40):
+        import pandas as _pd
+        for sep in ('\t', ',', None):
+            try:
+                if sep is None:
+                    dfh = _pd.read_csv(path, dtype=str, keep_default_na=False, sep=None, engine='python', nrows=5)
+                else:
+                    dfh = _pd.read_csv(path, dtype=str, keep_default_na=False, sep=sep, engine='python', nrows=5)
+                return list(dfh.columns)[:max_cols]
+            except Exception:
+                continue
+        return []
+    def looks_like_eqc(cols: List[str]) -> bool:
+        norm = [c.strip().lower() for c in cols]
+        return ('stage' in norm and 'eqc type' in norm) or ('stage' in norm and 'eqc' in norm) or ('eqc type' in norm)
+    def looks_like_instructions(cols: List[str]) -> bool:
+        norm = [c.strip().lower() for c in cols]
+        return any(k in norm for k in ['reference id','current status','raised on date'])
+    eqc_cols = _read_head(eqc_path)
+    issues_cols = _read_head(issues_path)
+    if eqc_cols and issues_cols:
+        eqc_is_eqc = looks_like_eqc(eqc_cols)
+        issues_is_instructions = looks_like_instructions(issues_cols)
+        # If the designated EQC file does NOT look like EQC but the issues file DOES, attempt swap
+        if not eqc_is_eqc and looks_like_eqc(issues_cols):
+            print(f"[auto-swap] The file '{eqc_path}' does not look like EQC (cols: {eqc_cols[:6]} …) but '{issues_path}' does. Swapping roles.")
+            eqc_path, issues_path = issues_path, eqc_path
+        # If the issues file does not look like instructions but eqc does, keep as-is.
+        # If both look like EQC or both like instructions, proceed without swap (ambiguous case).
+
+    try:
+        eqc_res = eqc_summary_by_project(eqc_path, target, args.projects)
+    except ValueError as ve:
+        msg = str(ve)
+        if "not be an EQC extract" in msg and issues_cols and looks_like_eqc(issues_cols):
+            # Last chance swap if not already swapped
+            print(f"[retry-swap] Detected EQC schema in issues file; retrying with swapped inputs.")
+            eqc_res = eqc_summary_by_project(issues_path, target, args.projects)
+            # Reassign so issues summary uses the other path
+            issues_path, eqc_path = eqc_path, issues_path
+        else:
+            raise
     issues_res = issues_summary_by_project(issues_path, target, args.external_name, args.projects)
     print_combined_console(eqc_res, issues_res, target)
 
