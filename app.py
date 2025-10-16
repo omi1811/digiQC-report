@@ -87,6 +87,14 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
         n_pre = int(c.get("Pre", 0)); n_during = int(c.get("During", 0)); n_post = int(c.get("Post", 0)); n_other = int(c.get("Other", 0))
         return {"Pre": n_pre, "During": n_during, "Post": n_post + n_other}
 
+    def counts_raw(frame: pd.DataFrame) -> Dict[str, int]:
+        # Raw counts without any cumulative roll-up and without adding Other
+        if frame is None or frame.empty:
+            return {"Pre": 0, "During": 0, "Post": 0}
+        c = frame.groupby("__Stage", dropna=False)["__Stage"].count()
+        n_pre = int(c.get("Pre", 0)); n_during = int(c.get("During", 0)); n_post = int(c.get("Post", 0))
+        return {"Pre": n_pre, "During": n_during, "Post": n_post}
+
     out: Dict[str, Dict[str, Dict[str, int]]] = {}
     for proj in projects:
         sub = df[df["__ProjectKey"].astype(str).str.strip() == proj]
@@ -94,7 +102,7 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
         month_mask = dates_sub.apply(lambda d: bool(d and d.year == target.year and d.month == target.month))
         today_mask = dates_sub == target
         out[proj] = {
-            # All-time: cumulative roll-up
+            # All-time: cumulative roll-up to match workbook 'Cumulative' sheet
             "all": EQC._compute_counts_from_frame(sub),
             # This month: raw counts with Post += Other
             "month": counts_daily_post_plus_other(sub[month_mask]),

@@ -25,6 +25,7 @@ import re
 import pandas as pd
 
 import analysis_eqc as EQC
+from project_utils import canonical_project_from_row
 # Issues logic removed to keep this script EQC-only.
 
 
@@ -56,11 +57,8 @@ def _drop_demo_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _canonical_project_from_row(row: pd.Series) -> str:
-    l0 = str(row.get("Location L0", "") or "").strip()
-    if l0:
-        return l0
-    proj = str(row.get("Project", "") or "").strip()
-    return proj
+    # Use shared canonicalization to avoid split projects on the dashboard
+    return canonical_project_from_row(row)
 
 
 def _projects_from(df: pd.DataFrame) -> List[str]:
@@ -106,6 +104,18 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
         n_other = int(vc.get("Other", 0))
         return {"Pre": n_pre, "During": n_during, "Post": n_post + n_other}
 
+    def _compute_counts_raw(sub_df: pd.DataFrame) -> Dict[str, int]:
+        """Raw counts without any cumulative roll-up and without adding Other."""
+        if sub_df is None or sub_df.empty:
+            return {"Pre": 0, "During": 0, "Post": 0}
+        stages = sub_df["__Stage"].astype(str) if "__Stage" in sub_df.columns else sub_df.get("Stage", "").map(EQC.normalize_stage)
+        vc = stages.value_counts()
+        return {
+            "Pre": int(vc.get("Pre", 0)),
+            "During": int(vc.get("During", 0)),
+            "Post": int(vc.get("Post", 0)),
+        }
+
     out: Dict[str, Dict[str, Dict[str, int]]] = {}
     for proj in projects:
         proj_mask = df["__ProjectKey"].astype(str).str.strip().eq(proj)
@@ -115,8 +125,8 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
         dates_sub = dates.loc[sub.index]
         month_mask = dates_sub.apply(lambda d: bool(d and d.year == target.year and d.month == target.month))
         sub_month = sub[month_mask]
-        # Keep cumulative logic for 'all' using analysis_eqc helper (roll-up applies)
-        all_counts = EQC._compute_counts_from_frame(sub)
+        # Total (all-time): raw counts with no roll-up and no Other added
+        all_counts = _compute_counts_raw(sub)
         # Daily: raw counts with Post += Other
         today_counts = _compute_counts_daily(sub_today)
         # Monthly: raw counts with Post += Other (no cumulative roll-up)
