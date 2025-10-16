@@ -199,6 +199,13 @@ def daily_dashboard():
     return render_template("dashboard.html", data=data_sorted, target=today.strftime("%d-%m-%Y"))
 
 
+@app.get("/daily-dashboard")
+@login_required
+def daily_dashboard_get():
+    # Avoid 405 if someone opens this URL directly; send them to the form
+    return redirect(url_for("index"))
+
+
 @app.post("/weekly-report")
 @login_required
 def weekly_report():
@@ -228,6 +235,13 @@ def weekly_report():
         except Exception:
             pass
         return send_file(content, as_attachment=True, download_name="EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/weekly-report")
+@login_required
+def weekly_report_get():
+    # Avoid 405 if someone opens this URL directly; send them to the form
+    return redirect(url_for("index"))
 
 
 if __name__ == "__main__":
