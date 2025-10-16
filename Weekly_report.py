@@ -309,13 +309,9 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
         for s in stage_order:
             if s in agg.columns:
                 agg[s] = pd.to_numeric(agg[s], errors='coerce').fillna(0).astype(int)
-        # New cumulative logic per request across all files:
-        # Pre = Pre + During + Post + Reinforcement + Shuttering + Other
-        # During = During + Post + Other
-        # Post = Post + Other
-        if all(col in agg.columns for col in ['Pre', 'During', 'Post']):
-            pre_components = [agg.get(x, 0) for x in ['Pre', 'During', 'Post']]
-            pre_components += [agg.get(x, 0) for x in ['Reinforcement', 'Shuttering', 'Other']]
+        # Apply cumulative roll-up ONLY when label == 'Cumulative'
+        if label == 'Cumulative' and all(col in agg.columns for col in ['Pre', 'During', 'Post']):
+            pre_components = [agg.get(x, 0) for x in ['Pre', 'During', 'Post', 'Reinforcement', 'Shuttering', 'Other']]
             agg['Pre'] = sum(pre_components)
             agg['During'] = agg.get('During', 0) + agg.get('Post', 0) + agg.get('Other', 0)
             agg['Post'] = agg.get('Post', 0) + agg.get('Other', 0)
