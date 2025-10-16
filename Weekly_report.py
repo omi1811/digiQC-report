@@ -369,10 +369,7 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
         flat_cols = [f"{b} - {s}" for (b, s) in wide_un.columns]
         wide_un.columns = flat_cols
         wide_un_reset = wide_un.reset_index()
-        if 'Checklists' in wide_un_reset.columns:
-            chk = wide_un_reset['Checklists'].astype(str).str.strip()
-            mask = (~chk.isna()) & (chk != '') & (~chk.str.match(r'^\d+$'))
-            wide_un_reset = wide_un_reset[mask]
+        # Keep all checklist rows (including numeric-only names) to preserve totals parity with dashboard
         wide_un_reset.to_csv(wide_filename, index=False)
         print(f"✅ Wrote {label} wide-format per-building summary to {wide_filename}")
     except Exception as e:

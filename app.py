@@ -80,9 +80,15 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
     projects = [p for p in sorted(df["__ProjectKey"].astype(str).str.strip().unique()) if p]
 
     def counts_daily(frame: pd.DataFrame) -> Dict[str, int]:
-        c = frame.groupby("__Stage", dropna=False)["__Stage"].count() if not frame.empty else {}
+        # Match analysis_eqc cumulative rule on a filtered window (today):
+        # Pre = Pre + During + Post + Other; During = During + Post + Other; Post = Post + Other
+        if frame is None or frame.empty:
+            return {"Pre": 0, "During": 0, "Post": 0}
+        c = frame.groupby("__Stage", dropna=False)["__Stage"].count()
         n_pre = int(c.get("Pre", 0)); n_during = int(c.get("During", 0)); n_post = int(c.get("Post", 0)); n_other = int(c.get("Other", 0))
-        return {"Pre": n_pre, "During": n_during, "Post": n_post + n_other}
+        return {"Pre": n_pre + n_during + n_post + n_other,
+                "During": n_during + n_post + n_other,
+                "Post": n_post + n_other}
 
     out: Dict[str, Dict[str, Dict[str, int]]] = {}
     for proj in projects:
