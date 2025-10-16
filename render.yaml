@@ -11,11 +11,11 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.3
-      - key: secret
+      - key: SECRET_KEY
         sync: false
-      - key: admin
+      - key: APP_USERNAME
         sync: false
-      - key: password
+      - key: APP_PASSWORD
         sync: false
-  healthCheckPath: /login
+    healthCheckPath: /login
     autoDeploy: true
