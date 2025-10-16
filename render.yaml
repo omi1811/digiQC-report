@@ -15,5 +15,5 @@ services:
         sync: false
       - key: APP_PASSWORD
         sync: false
-    healthCheckPath: /
+  healthCheckPath: /login
     autoDeploy: true
