@@ -90,8 +90,8 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
     else:
         projects = all_projects
 
-    # Daily-only computation override:
-    # For the daily EQC report we want: Pre = Pre, During = During, Post = Post + Other
+    # For daily and monthly we want raw counts with Other added into Post only:
+    # Pre = Pre, During = During, Post = Post + Other (no cumulative roll-up)
     def _compute_counts_daily(sub_df: pd.DataFrame) -> Dict[str, int]:
         if sub_df is None or sub_df.empty:
             return {"Pre": 0, "During": 0, "Post": 0}
@@ -115,12 +115,11 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
         dates_sub = dates.loc[sub.index]
         month_mask = dates_sub.apply(lambda d: bool(d and d.year == target.year and d.month == target.month))
         sub_month = sub[month_mask]
-        # Keep cumulative logic as-is for 'all' using analysis_eqc helper
+        # Keep cumulative logic for 'all' using analysis_eqc helper (roll-up applies only to cumulative)
         all_counts = EQC._compute_counts_from_frame(sub)
-        # Override daily logic per requirement: pre=pre, during=during, post=post+other
+        # Daily and Monthly: raw counts with Post += Other
         today_counts = _compute_counts_daily(sub_today)
-        # Monthly uses the same cumulative mapping logic, filtered to current month
-        month_counts = EQC._compute_counts_from_frame(sub_month)
+        month_counts = _compute_counts_daily(sub_month)
         out[proj] = {
             "all": all_counts,
             "month": month_counts,
