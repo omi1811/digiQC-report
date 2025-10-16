@@ -95,6 +95,30 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
         n_pre = int(c.get("Pre", 0)); n_during = int(c.get("During", 0)); n_post = int(c.get("Post", 0))
         return {"Pre": n_pre, "During": n_during, "Post": n_post}
 
+    def counts_cumulative_weeklylogic(frame: pd.DataFrame) -> Dict[str, int]:
+        """Cumulative roll-up using the same mapping as the console (weekly report) and workbook:
+
+        - Pre = total rows
+        - During = During + Post + Other
+        - Post = Post + Other
+
+        Where 'Other' are rows whose Stage is not pre/during/post/reinforce/shutter.
+        """
+        if frame is None or frame.empty:
+            return {"Pre": 0, "During": 0, "Post": 0}
+        s = frame.get("Stage", pd.Series(["" ] * len(frame), index=frame.index)).astype(str).str.lower()
+        pre = s.str.contains("pre", na=False)
+        during = s.str.contains("during", na=False)
+        post = s.str.contains("post", na=False)
+        reinf = s.str.contains("reinforce", na=False)
+        shut = s.str.contains("shutter", na=False)
+        other = ~(pre | during | post | reinf | shut)
+        total = int(len(s))
+        d_count = int(during.sum())
+        p_count = int(post.sum())
+        o_count = int(other.sum())
+        return {"Pre": total, "During": d_count + p_count + o_count, "Post": p_count + o_count}
+
     out: Dict[str, Dict[str, Dict[str, int]]] = {}
     for proj in projects:
         sub = df[df["__ProjectKey"].astype(str).str.strip() == proj]
@@ -102,8 +126,8 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
         month_mask = dates_sub.apply(lambda d: bool(d and d.year == target.year and d.month == target.month))
         today_mask = dates_sub == target
         out[proj] = {
-            # All-time: cumulative roll-up to match workbook 'Cumulative' sheet
-            "all": EQC._compute_counts_from_frame(sub),
+            # All-time: cumulative roll-up to match workbook 'Cumulative' ALL sums (weekly report mapping)
+            "all": counts_cumulative_weeklylogic(sub),
             # This month: raw counts with Post += Other
             "month": counts_daily_post_plus_other(sub[month_mask]),
             # Today: raw counts with Post += Other
