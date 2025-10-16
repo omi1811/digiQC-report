@@ -105,15 +105,82 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
         return {"Pre": n_pre, "During": n_during, "Post": n_post + n_other}
 
     def _compute_counts_raw(sub_df: pd.DataFrame) -> Dict[str, int]:
-        """Raw counts without any cumulative roll-up and without adding Other."""
+        """Raw counts using normalized stages (kept for potential future use)."""
         if sub_df is None or sub_df.empty:
             return {"Pre": 0, "During": 0, "Post": 0}
         stages = sub_df["__Stage"].astype(str) if "__Stage" in sub_df.columns else sub_df.get("Stage", "").map(EQC.normalize_stage)
         vc = stages.value_counts()
+        return {"Pre": int(vc.get("Pre", 0)), "During": int(vc.get("During", 0)), "Post": int(vc.get("Post", 0))}
+
+    def _compute_counts_raw_pdp(sub_df: pd.DataFrame) -> Dict[str, int]:
+        """Raw Pre/During/Post counts from original Stage strings only.
+
+        Important: Do NOT treat Reinforcement/Shuttering as Pre here. They should
+        fall into 'Other' so the complement method matches workbook cumulative ALL sums.
+        """
+        if sub_df is None or sub_df.empty:
+            return {"Pre": 0, "During": 0, "Post": 0}
+        s = sub_df.get("Stage", "").astype(str).str.lower()
+        pre = s.str.contains("pre", na=False) | s.str.contains("before", na=False)
+        # Exclude reinforcement/shuttering from Pre
+        pre = pre & ~s.str.contains("reinforce|shutter", na=False)
+        during = s.str.contains("during", na=False)
+        post = s.str.contains("post", na=False)
+        return {"Pre": int(pre.sum()), "During": int(during.sum()), "Post": int(post.sum())}
+
+    def _compute_counts_cumulative_equiv(sub_df: pd.DataFrame) -> Dict[str, int]:
+        """Cumulative roll-up via complement to match workbook ALL sums exactly.
+
+        Pre_out = total_rows
+        During_out = total_rows - Pre_raw
+        Post_out = total_rows - (Pre_raw + During_raw)
+        """
+        if sub_df is None or sub_df.empty:
+            return {"Pre": 0, "During": 0, "Post": 0}
+        raw = _compute_counts_raw(sub_df)
+        total = int(len(sub_df))
+        pre_raw = raw.get("Pre", 0)
+        during_raw = raw.get("During", 0)
         return {
-            "Pre": int(vc.get("Pre", 0)),
-            "During": int(vc.get("During", 0)),
-            "Post": int(vc.get("Post", 0)),
+            "Pre": total,
+            "During": total - pre_raw,
+            "Post": total - (pre_raw + during_raw),
+        }
+
+
+    def _compute_counts_cumulative_weeklylogic(sub_df: pd.DataFrame) -> Dict[str, int]:
+        """Cumulative roll-up using the same stage mapping as Weekly_report.py.
+
+        Mapping:
+        - 'pre' -> Pre
+        - 'during' -> During
+        - 'post' -> Post
+        - 'reinforce' -> Reinforcement
+        - 'shutter' -> Shuttering
+        - else -> Other
+
+        Output:
+        - Pre = total rows
+        - During = During + Post + Other
+        - Post = Post + Other
+        """
+        if sub_df is None or sub_df.empty:
+            return {"Pre": 0, "During": 0, "Post": 0}
+        s = sub_df.get("Stage", "").astype(str).str.lower()
+        pre = s.str.contains("pre", na=False)
+        during = s.str.contains("during", na=False)
+        post = s.str.contains("post", na=False)
+        reinf = s.str.contains("reinforce", na=False)
+        shut = s.str.contains("shutter", na=False)
+        other = ~(pre | during | post | reinf | shut)
+        total = int(len(s))
+        d_count = int(during.sum())
+        p_count = int(post.sum())
+        o_count = int(other.sum())
+        return {
+            "Pre": total,
+            "During": d_count + p_count + o_count,
+            "Post": p_count + o_count,
         }
 
     out: Dict[str, Dict[str, Dict[str, int]]] = {}
@@ -125,8 +192,8 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
         dates_sub = dates.loc[sub.index]
         month_mask = dates_sub.apply(lambda d: bool(d and d.year == target.year and d.month == target.month))
         sub_month = sub[month_mask]
-        # Total (all-time): raw counts with no roll-up and no Other added
-        all_counts = _compute_counts_raw(sub)
+        # Total (all-time): cumulative roll-up to match workbook 'Cumulative' ALL sums (weekly report mapping)
+        all_counts = _compute_counts_cumulative_weeklylogic(sub)
         # Daily: raw counts with Post += Other
         today_counts = _compute_counts_daily(sub_today)
         # Monthly: raw counts with Post += Other (no cumulative roll-up)
