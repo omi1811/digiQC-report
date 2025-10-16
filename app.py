@@ -30,12 +30,27 @@ def normalize_stage(stage: str) -> str:
     return EQC.normalize_stage(stage)
 
 
+def _canonicalize_project_name(name: str) -> str:
+    s = str(name or "").strip()
+    key = s.lower().replace("_", " ")
+    # Known variants mapped to canonical display names
+    mappings = {
+        "city life": "Itrend City Life",
+        "itrend city life": "Itrend City Life",
+        "futura": "Itrend Futura",
+        "itrend futura": "Itrend Futura",
+        "itrend-palacio": "Itrend Palacio",
+        "itrend palacio": "Itrend Palacio",
+    }
+    return mappings.get(key, s)
+
+
 def canonical_project(row: pd.Series) -> str:
     l0 = str(row.get("Location L0", "") or "").strip()
     if l0:
-        return l0
+        return _canonicalize_project_name(l0)
     proj = str(row.get("Project", "") or "").strip()
-    return proj
+    return _canonicalize_project_name(proj)
 
 
 def read_eqc_robust(fobj: io.BytesIO) -> pd.DataFrame:
