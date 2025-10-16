@@ -79,13 +79,13 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
     df["__ProjectKey"] = df.apply(canonical_project, axis=1)
     projects = [p for p in sorted(df["__ProjectKey"].astype(str).str.strip().unique()) if p]
 
-    def counts_raw(frame: pd.DataFrame) -> Dict[str, int]:
-        # Raw counts: do NOT apply cumulative roll-up; ignore 'Other' entirely here
+    def counts_daily_post_plus_other(frame: pd.DataFrame) -> Dict[str, int]:
+        # Raw counts with Post including Other; no cumulative roll-up here
         if frame is None or frame.empty:
             return {"Pre": 0, "During": 0, "Post": 0}
         c = frame.groupby("__Stage", dropna=False)["__Stage"].count()
-        n_pre = int(c.get("Pre", 0)); n_during = int(c.get("During", 0)); n_post = int(c.get("Post", 0))
-        return {"Pre": n_pre, "During": n_during, "Post": n_post}
+        n_pre = int(c.get("Pre", 0)); n_during = int(c.get("During", 0)); n_post = int(c.get("Post", 0)); n_other = int(c.get("Other", 0))
+        return {"Pre": n_pre, "During": n_during, "Post": n_post + n_other}
 
     out: Dict[str, Dict[str, Dict[str, int]]] = {}
     for proj in projects:
@@ -94,9 +94,12 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
         month_mask = dates_sub.apply(lambda d: bool(d and d.year == target.year and d.month == target.month))
         today_mask = dates_sub == target
         out[proj] = {
-            "all": counts_raw(sub),
-            "month": counts_raw(sub[month_mask]),
-            "today": counts_raw(sub[today_mask]),
+            # All-time: cumulative roll-up
+            "all": EQC._compute_counts_from_frame(sub),
+            # This month: raw counts with Post += Other
+            "month": counts_daily_post_plus_other(sub[month_mask]),
+            # Today: raw counts with Post += Other
+            "today": counts_daily_post_plus_other(sub[today_mask]),
         }
     return out
 

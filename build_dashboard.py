@@ -119,8 +119,8 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
         all_counts = EQC._compute_counts_from_frame(sub)
         # Daily: raw counts with Post += Other
         today_counts = _compute_counts_daily(sub_today)
-        # Monthly: use cumulative mapping on the month window
-        month_counts = EQC._compute_counts_from_frame(sub_month)
+        # Monthly: raw counts with Post += Other (no cumulative roll-up)
+        month_counts = _compute_counts_daily(sub_month)
         out[proj] = {
             "all": all_counts,
             "month": month_counts,
