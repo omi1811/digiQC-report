@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% block title %}EQC Tools{% endblock %}
+{% block content %}
+  <div class="row">
+    <div class="col-md-12">
+  <div class="alert alert-info">Upload your digiQC EQC Latest Log file below. We don't store your data.</div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="col-md-12">
+      <div class="card">
+        <div class="card-body">
+          <h5 class="card-title">Daily Dashboard</h5>
+          <p class="card-text">See cumulative, this-month, and today's counts per project.</p>
+          <form method="post" action="{{ url_for('daily_dashboard') }}" enctype="multipart/form-data">
+            <div class="mb-3">
+              <input class="form-control" type="file" name="eqc" accept=".csv,.tsv,.txt" required>
+            </div>
+            <button class="btn btn-primary" type="submit">Show Daily Dashboard</button>
+          </form>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body">
+          <h5 class="card-title">EQC detailed report</h5>
+          <p class="card-text">Generates a combined Excel workbook (Weekly/Monthly/Cumulative) in Pre, During, Post format (Building wise/Project wise) for download.</p>
+          <form method="post" action="{{ url_for('weekly_report') }}" enctype="multipart/form-data">
+            <div class="mb-3">
+              <input class="form-control" type="file" name="eqc" accept=".csv,.tsv,.txt" required>
+            </div>
+            <button class="btn btn-success" type="submit">Generate Weekly Workbook</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

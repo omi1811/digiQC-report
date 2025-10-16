@@ -1,0 +1,48 @@
+{% extends 'base.html' %}
+{% block title %}Daily EQC Dashboard{% endblock %}
+{% block content %}
+  <a href="{{ url_for('index') }}" class="btn btn-link mb-3">&larr; Back</a>
+  <h3 class="mb-3">Daily EQC Dashboard <span class="text-muted">({{ target }})</span></h3>
+  {% if not data %}
+    <div class="alert alert-warning">No data available for the uploaded file/date.</div>
+  {% endif %}
+  {% for proj, vals in data.items() %}
+    <div class="card">
+      <div class="card-body">
+        <h5 class="card-title">{{ proj }}</h5>
+        <div class="table-responsive">
+          <table class="table table-sm table-bordered align-middle">
+            <thead class="table-light">
+              <tr>
+                <th scope="col"></th>
+                <th scope="col">Pre</th>
+                <th scope="col">During</th>
+                <th scope="col">Post</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Total</th>
+                <td>{{ vals['all']['Pre'] }}</td>
+                <td>{{ vals['all']['During'] }}</td>
+                <td>{{ vals['all']['Post'] }}</td>
+              </tr>
+              <tr>
+                <th scope="row">This Month</th>
+                <td>{{ vals['month']['Pre'] }}</td>
+                <td>{{ vals['month']['During'] }}</td>
+                <td>{{ vals['month']['Post'] }}</td>
+              </tr>
+              <tr>
+                <th scope="row">Today</th>
+                <td>{{ vals['today']['Pre'] }}</td>
+                <td>{{ vals['today']['During'] }}</td>
+                <td>{{ vals['today']['Post'] }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+{% endblock %}

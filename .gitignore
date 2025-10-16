@@ -1,0 +1,11 @@
+# Ignore generated report artifacts
+*-Weekly-digiQC-report_EQC_*.csv
+*-Monthly-digiQC-report_EQC_*.csv
+*-Cumulative-digiQC-report_EQC_*.csv
+*-Daily-digiQC-report_EQC_*.csv
+EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx
+EQC_Daily_Report_*.xlsx
+
+# Python cache
+__pycache__/
+*.pyc

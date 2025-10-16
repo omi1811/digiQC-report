@@ -7,7 +7,7 @@ import argparse
 # --- CLI args / site name ---
 parser = argparse.ArgumentParser(description="EQC report generator (Weekly / Monthly / Cumulative)")
 parser.add_argument("--input", "-i", default="Combined_EQC.csv", help="Input combined EQC CSV/TSV file")
-parser.add_argument("--mode", "-m", choices=["weekly", "monthly", "cumulative"], help="Report mode. If omitted, an interactive menu will be shown.")
+parser.add_argument("--mode", "-m", choices=["weekly", "monthly", "cumulative"], help="Report mode. Default: weekly (also builds monthly & cumulative and combines to Excel when weekly is selected)")
 args = parser.parse_args()
 eqc_file = args.input
 if not os.path.exists(eqc_file):
@@ -50,21 +50,26 @@ existing_needed = [c for c in needed_cols if c in df.columns]
 if existing_needed:
     df = df[existing_needed].copy()
 
+# Drop DEMO projects entirely (rows where Project/Project Name/Location L0 contains 'DEMO')
+def _drop_demo_rows(df_in: pd.DataFrame) -> pd.DataFrame:
+    d = df_in
+    cols = [c for c in ("Project", "Project Name", "Location L0") if c in d.columns]
+    if not cols:
+        return d
+    mask_demo = pd.Series(False, index=d.index)
+    for c in cols:
+        mask_demo = mask_demo | d[c].astype(str).str.contains("DEMO", case=False, na=False)
+    return d[~mask_demo]
+
+df = _drop_demo_rows(df)
+
 # Canonicalize project key similar to build_dashboard to include rows with blank Location L0
 def _canonical_project_from_row(row: pd.Series) -> str:
     l0 = str(row.get("Location L0", "") or "").strip()
     if l0:
         return l0
     proj = str(row.get("Project", "") or "").strip()
-    m = {
-        "Itrend Futura": "FUTURA",
-        "FUTURA": "FUTURA",
-        "City Life": "Itrend City Life",
-        "Itrend City Life": "Itrend City Life",
-        "Itrend Palacio": "Itrend-Palacio",
-        "Itrend-Palacio": "Itrend-Palacio",
-    }
-    return m.get(proj, proj)
+    return proj
 
 # Derive site name from Location L0 (first non-empty value). Fallback to cwd or 'site'
 loc0 = df.get('Location L0', pd.Series(dtype=str)).astype(str).str.strip()
@@ -376,31 +381,34 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
     except Exception as e:
         print(f'Failed to write {label} wide-format per-building summary:', str(e))
 
-# --- Determine mode (interactive menu if not provided) ---
-mode = args.mode
-if not mode:
-    print("Select report mode:")
-    print("  1) Weekly")
-    print("  2) Monthly")
-    print("  3) Cumulative")
-    choice = input("Enter choice [1-3]: ").strip()
-    mode = {"1": "weekly", "2": "monthly", "3": "cumulative"}.get(choice, "weekly")
+# --- Determine mode (non-interactive): default to weekly ---
+mode = args.mode or "weekly"
 
 # --- Split by project and process ---
 # Build canonical project keys
 df["__ProjectKey"] = df.apply(_canonical_project_from_row, axis=1)
 projects = [p for p in df["__ProjectKey"].astype(str).str.strip().unique() if p and 'demo' not in p.lower()]
 
-# limit to the three target projects only
-allowed = {"FUTURA", "Itrend City Life", "Itrend-Palacio"}
-df_window = filter_by_mode(df, mode)
-label = "Weekly" if mode == "weekly" else ("Monthly" if mode == "monthly" else "Cumulative")
-for proj in projects:
-    if proj not in allowed:
-        continue
-    # filter using canonical project key derived earlier
-    df_window = df_window.copy()
-    df_window["__ProjectKey"] = df_window.apply(_canonical_project_from_row, axis=1)
-    sub = df_window[df_window["__ProjectKey"].astype(str).str.strip() == proj].copy()
-    site_name = str(proj).replace(' ', '_')
-    process_report(sub, site_name, label)
+def generate_for_mode(run_mode: str) -> None:
+    win = filter_by_mode(df, run_mode)
+    lbl = "Weekly" if run_mode == "weekly" else ("Monthly" if run_mode == "monthly" else "Cumulative")
+    for proj in projects:
+        sub_win = win.copy()
+        sub_win["__ProjectKey"] = sub_win.apply(_canonical_project_from_row, axis=1)
+        sub = sub_win[sub_win["__ProjectKey"].astype(str).str.strip() == proj].copy()
+        site = str(proj).replace(' ', '_')
+        process_report(sub, site, lbl)
+
+# If weekly is selected (or defaulted via menu), generate all three modes to ensure the combined workbook has everything
+if mode == "weekly":
+    for m in ("weekly", "monthly", "cumulative"):
+        generate_for_mode(m)
+else:
+    generate_for_mode(mode)
+
+# Always build the combined workbook after generation so the user gets an up-to-date Excel
+try:
+    import combine_reports_to_excel as comb
+    comb.main()
+except Exception as e:
+    print(f"Failed to build combined workbook automatically: {e}. You can run 'python3 combine_reports_to_excel.py' manually.")
