@@ -3,6 +3,7 @@ import re
 import pandas as pd
 from typing import Tuple
 import argparse
+from project_utils import canonicalize_project_name, canonical_project_from_row
 
 # --- CLI args / site name ---
 parser = argparse.ArgumentParser(description="EQC report generator (Weekly / Monthly / Cumulative)")
@@ -63,26 +64,9 @@ def _drop_demo_rows(df_in: pd.DataFrame) -> pd.DataFrame:
 
 df = _drop_demo_rows(df)
 
-# Canonicalize project key similar to build_dashboard to include rows with blank Location L0
-def _canonicalize_project_name(name: str) -> str:
-    s = str(name or "").strip()
-    key = s.lower().replace("_", " ")
-    mappings = {
-        "city life": "Itrend City Life",
-        "itrend city life": "Itrend City Life",
-        "futura": "Itrend Futura",
-        "itrend futura": "Itrend Futura",
-        "itrend-palacio": "Itrend Palacio",
-        "itrend palacio": "Itrend Palacio",
-    }
-    return mappings.get(key, s)
-
+# Canonicalize project key using shared helper with fallbacks
 def _canonical_project_from_row(row: pd.Series) -> str:
-    l0 = str(row.get("Location L0", "") or "").strip()
-    if l0:
-        return _canonicalize_project_name(l0)
-    proj = str(row.get("Project", "") or "").strip()
-    return _canonicalize_project_name(proj)
+    return canonical_project_from_row(row)
 
 # Derive site name from Location L0 (first non-empty value). Fallback to cwd or 'site'
 loc0 = df.get('Location L0', pd.Series(dtype=str)).astype(str).str.strip()
