@@ -21,7 +21,17 @@ def detect_project_from_filename(fname: str, mode: str) -> str:
         proj = base[:idx].rstrip('-') if idx > 0 else base
     # Normalize underscores to spaces where relevant
     proj = proj.replace('_', ' ')
-    return proj
+    # Canonicalize common variants to match app & weekly script
+    key = proj.strip().lower().replace('_', ' ')
+    mappings = {
+        "city life": "Itrend City Life",
+        "itrend city life": "Itrend City Life",
+        "futura": "Itrend Futura",
+        "itrend futura": "Itrend Futura",
+        "itrend-palacio": "Itrend Palacio",
+        "itrend palacio": "Itrend Palacio",
+    }
+    return mappings.get(key, proj.strip())
 
 
 def coerce_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
