@@ -234,7 +234,10 @@ def weekly_report():
             os.remove(out_xlsx)
         except Exception:
             pass
-        return send_file(content, as_attachment=True, download_name="EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        # Include current date in the download filename
+        today_str = date.today().strftime("%d-%m-%Y")
+        dl_name = f"EQC_Weekly_Monthly_Cumulative_AllProjects_{today_str}.xlsx"
+        return send_file(content, as_attachment=True, download_name=dl_name, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/weekly-report")

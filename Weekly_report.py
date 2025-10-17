@@ -366,7 +366,19 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
         wide_un.columns = flat_cols
         wide_un_reset = wide_un.reset_index()
         # Keep all checklist rows (including numeric-only names) to preserve totals parity with dashboard
-        wide_un_reset.to_csv(wide_filename, index=False)
+        # Append a TOTAL row at the end summing across all checklists
+        try:
+            total_row = {}
+            for col in wide_un_reset.columns:
+                if str(col).strip().lower() == 'checklists':
+                    total_row[col] = 'TOTAL'
+                else:
+                    total_row[col] = pd.to_numeric(wide_un_reset[col], errors='coerce').fillna(0).astype(int).sum()
+            wide_with_total = pd.concat([wide_un_reset, pd.DataFrame([total_row])], ignore_index=True)
+        except Exception:
+            # Fallback: write without total row if anything unexpected happens
+            wide_with_total = wide_un_reset
+        wide_with_total.to_csv(wide_filename, index=False)
         print(f"✅ Wrote {label} wide-format per-building summary to {wide_filename}")
     except Exception as e:
         print(f'Failed to write {label} wide-format per-building summary:', str(e))
