@@ -22,7 +22,18 @@
           <button class="btn btn-primary" type="submit">Update</button>
         </div>
       </form>
-  <p class="mt-2 text-muted small">Quality issues only (Safety excluded). Bars show External vs Internal (Total/Open/Closed) per building. External person: <strong>{{ external_name }}</strong></p>
+      <form class="row gy-2 gx-2 align-items-end mt-2" method="post" action="{{ url_for('set_issues_external', next=url_for('issues_building_dashboard')) }}">
+        <div class="col-md-5">
+          <label class="form-label">External Auditor</label>
+          <input class="form-control" type="text" name="external_name" id="external_name" value="{{ external_name }}" list="rb_list" placeholder="Type name or leave blank/None">
+          <datalist id="rb_list"></datalist>
+        </div>
+        <div class="col-md-2">
+          <button class="btn btn-outline-primary" type="submit">Set External</button>
+        </div>
+        <div class="col-md-4 small text-muted">Leave blank or enter "None" to treat all as Internal.</div>
+      </form>
+  <p class="mt-2 text-muted small">Quality issues only (Safety excluded). This page shows Internal and External as separate charts.</p>
     </div>
   </div>
 
@@ -62,9 +73,6 @@
       const data = {
         labels: s.labels,
         datasets: [
-          { label: 'External Total', data: s.ext_total, backgroundColor: '#339af0', categoryPercentage: 0.7, barPercentage: 1.0, barThickness: 34, maxBarThickness: 48 },
-          { label: 'External Open', data: s.ext_open, backgroundColor: '#ff6b6b', categoryPercentage: 0.7, barPercentage: 1.0, barThickness: 34, maxBarThickness: 48 },
-          { label: 'External Closed', data: s.ext_closed, backgroundColor: '#20c997', categoryPercentage: 0.7, barPercentage: 1.0, barThickness: 34, maxBarThickness: 48 },
           { label: 'Internal Total', data: s.int_total, backgroundColor: '#845ef7', categoryPercentage: 0.7, barPercentage: 1.0, barThickness: 34, maxBarThickness: 48 },
           { label: 'Internal Open', data: s.int_open, backgroundColor: '#ffa94d', categoryPercentage: 0.7, barPercentage: 1.0, barThickness: 34, maxBarThickness: 48 },
           { label: 'Internal Closed', data: s.int_closed, backgroundColor: '#adb5bd', categoryPercentage: 0.7, barPercentage: 1.0, barThickness: 34, maxBarThickness: 48 }
@@ -113,3 +121,26 @@
     }
   </script>
 {% endblock %}
+
+    // Suggestions for External Auditor input
+    (function() {
+      const inp = document.getElementById('external_name');
+      const dl = document.getElementById('rb_list');
+      if (!inp || !dl) return;
+      let lastQ = '';
+      inp.addEventListener('input', async () => {
+        const q = inp.value.trim();
+        if (q === lastQ) return; lastQ = q;
+        try {
+          const res = await fetch(`/api/suggest-raised-by?q=${encodeURIComponent(q)}&limit=8`);
+          const arr = await res.json();
+          dl.innerHTML = '';
+          (arr || []).forEach(o => {
+            const opt = document.createElement('option');
+            opt.value = o.name;
+            opt.label = `${o.name} (${o.count})`;
+            dl.appendChild(opt);
+          });
+        } catch (e) { /* ignore */ }
+      });
+    })();
