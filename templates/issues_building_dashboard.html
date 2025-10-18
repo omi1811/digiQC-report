@@ -50,9 +50,11 @@
   {% endif %}
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script id="has-external" type="application/json">{{ has_external | tojson | safe }}</script>
   <script id="issues-chart-data" type="application/json">{{ chart_data | tojson | safe }}</script>
   <script>
     const issuesData = JSON.parse(document.getElementById('issues-chart-data').textContent);
+    const HAS_EXTERNAL = JSON.parse(document.getElementById('has-external').textContent);
     let i = 0;
     for (const [proj, s] of Object.entries(issuesData)) {
       i += 1;
@@ -83,8 +85,8 @@
         }
       });
       // External-only focus chart (Total/Open/Closed)
-  {% if has_external %}
-  const ctxExt = document.getElementById('issues_chart_ext_' + i).getContext('2d');
+      if (HAS_EXTERNAL) {
+        const ctxExt = document.getElementById('issues_chart_ext_' + i).getContext('2d');
       const dataExt = {
         labels: s.labels,
         datasets: [
@@ -106,8 +108,8 @@
           },
           plugins: { legend: { position: 'top', labels: { color: '#212529', boxWidth: 16, padding: 12, font: { size: 12, weight: '600' } } }, tooltip: { backgroundColor: 'rgba(0,0,0,.85)', titleColor: '#fff', bodyColor: '#fff', borderColor: '#495057', borderWidth: 1 } }
         }
-  });
-  {% endif %}
+      });
+      }
     }
   </script>
 {% endblock %}
