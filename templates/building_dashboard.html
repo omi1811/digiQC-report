@@ -1,0 +1,80 @@
+{% extends 'base.html' %}
+{% block title %}Building-wise Cumulative Dashboard{% endblock %}
+{% block content %}
+  <a href="{{ url_for('dashboards_page') }}" class="btn btn-outline-secondary btn-sm mb-3"><i class="bi bi-arrow-left"></i> Back to Dashboards</a>
+  <div class="card mb-3">
+    <div class="card-body">
+      <h5 class="card-title">Building-wise Cumulative Dashboard</h5>
+      <form class="row gy-2 gx-2 align-items-end" method="get" action="{{ url_for('building_dashboard') }}">
+        <div class="col-md-6">
+          <label class="form-label">EQC file path</label>
+          <input class="form-control" type="text" name="path" value="{{ path }}">
+        </div>
+        <div class="col-md-2">
+          <button class="btn btn-primary" type="submit">Update</button>
+        </div>
+      </form>
+  <p class="mt-2 text-muted small">Counts reflect normalized stages as recorded: Pre, During, Post.</p>
+    </div>
+  </div>
+
+  {% if chart_data %}
+    {% for proj, series in chart_data.items() %}
+      <div class="card mb-4">
+        <div class="card-body">
+          <h6 class="card-title">{{ proj }}</h6>
+          <div style="height:440px">
+            <canvas id="chart_{{ loop.index }}"></canvas>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+  {% else %}
+    <div class="alert alert-warning">No data found. Check the path or file contents.</div>
+  {% endif %}
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script id="chart-data" type="application/json">{{ chart_data | tojson | safe }}</script>
+  <script>
+    const chartData = JSON.parse(document.getElementById('chart-data').textContent);
+    let idx = 0;
+    for (const [proj, s] of Object.entries(chartData)) {
+      idx += 1;
+  const ctx = document.getElementById('chart_' + idx).getContext('2d');
+      const data = {
+        labels: s.labels,
+        datasets: [
+          { label: 'Pre', data: s.pre, backgroundColor: '#339af0', categoryPercentage: 0.9, barPercentage: 1.0, barThickness: 36, maxBarThickness: 48 },
+          { label: 'During', data: s.during, backgroundColor: '#fcc419', categoryPercentage: 0.9, barPercentage: 1.0, barThickness: 36, maxBarThickness: 48 },
+          { label: 'Post', data: s.post, backgroundColor: '#20c997', categoryPercentage: 0.9, barPercentage: 1.0, barThickness: 36, maxBarThickness: 48 },
+        ]
+      };
+      new Chart(ctx, {
+        type: 'bar',
+        data,
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          elements: { bar: { borderRadius: 8, borderSkipped: false } },
+          scales: {
+            x: {
+              stacked: false,
+              ticks: { color: '#212529', font: { size: 16, weight: '700' } },
+              grid: { color: '#e9ecef' }
+            },
+            y: {
+              beginAtZero: true,
+              ticks: { precision:0, color: '#212529', font: { size: 16, weight: '700' } },
+              grid: { color: '#e9ecef' }
+            }
+          },
+          plugins: {
+            legend: { position: 'top', labels: { color: '#212529', font: { size: 16, weight: '800' } } },
+            tooltip: { backgroundColor: 'rgba(0,0,0,.85)', titleColor: '#fff', bodyColor: '#fff', borderColor: '#495057', borderWidth: 1 }
+          }
+        }
+      });
+    }
+  </script>
+{% endblock %}

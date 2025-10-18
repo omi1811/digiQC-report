@@ -3,7 +3,9 @@
 
 {% block content %}
 <div class="container" style="max-width: 420px;">
-  <h3 class="mb-3">Please sign in</h3>
+  <div class="card card-hover mb-3">
+    <div class="card-body">
+      <h3 class="mb-3">Please sign in</h3>
   {% if error %}
   <div class="alert alert-danger" role="alert">{{ error }}</div>
   {% endif %}
@@ -18,5 +20,7 @@
     </div>
     <button type="submit" class="btn btn-primary w-100">Sign in</button>
   </form>
+    </div>
+  </div>
 </div>
 {% endblock %}

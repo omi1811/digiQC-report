@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block title %}Combined Instruction Report{% endblock %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h3 class="mb-0"><i class="bi bi-file-earmark-excel me-2 text-info"></i>Combined Instruction Report</h3>
+    <a href="{{ url_for('reports_page') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Reports</a>
+  </div>
+  <div class="card">
+    <div class="card-body">
+  <p>This runs <code>digiqc_Inst/main.py</code> and serves <strong>Activity wise stage wise instructions details &lt;date&gt;.xlsx</strong> (falling back to <code>Combined_Summary.xlsx</code> if the report file isn’t produced).</p>
+      <div class="d-grid gap-2 d-md-flex">
+        <a class="btn btn-info" href="{{ url_for('inst_report_build') }}"><i class="bi bi-gear"></i> Build Combined Report</a>
+  <a class="btn btn-outline-primary{% if not exists.report %} disabled{% endif %}" href="{{ url_for('inst_report_download') }}"><i class="bi bi-download"></i> Download Activity wise report</a>
+      </div>
+      <hr>
+      <ul class="list-unstyled small text-muted">
+        <li>Pipeline present: <strong>{{ 'Yes' if exists.main else 'No' }}</strong></li>
+        <li>Report available: <strong>{{ 'Yes' if exists.report else 'No' }}</strong></li>
+      </ul>
+    </div>
+  </div>
+{% endblock %}

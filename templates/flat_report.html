@@ -1,0 +1,92 @@
+{% extends 'base.html' %}
+{% block title %}Flat-wise EQC Report{% endblock %}
+{% block content %}
+  <div class="card">
+    <div class="card-body">
+      <h5 class="card-title">Flat-wise EQC Report (Local test)</h5>
+      <form class="row gy-2 gx-2 align-items-end" method="get" action="{{ url_for('flat_report_index') }}">
+        <div class="col-md-3">
+          <label class="form-label">EQC file path</label>
+          <input class="form-control" type="text" name="path" value="{{ path }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Project</label>
+          <select class="form-select" name="project" onchange="this.form.submit()">
+            {% for p in projects %}
+              <option value="{{ p }}" {% if p == selected_project %}selected{% endif %}>{{ p }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Building</label>
+          <select class="form-select" name="building" onchange="this.form.submit()">
+            {% for b in buildings %}
+              <option value="{{ b }}" {% if b == selected_building %}selected{% endif %}>{{ b }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Floor</label>
+          <select class="form-select" name="floor" onchange="this.form.submit()">
+            <option value="ALL" {% if selected_floor == 'ALL' %}selected{% endif %}>All floors (building-wise)</option>
+            {% for f in floors %}
+              <option value="{{ f }}" {% if f == selected_floor %}selected{% endif %}>{{ f }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Flat</label>
+          <select class="form-select" name="flat" onchange="this.form.submit()">
+            <option value="ALL" {% if selected_flat == 'ALL' %}selected{% endif %}>All</option>
+            {% for fl in flats %}
+              <option value="{{ fl }}" {% if fl == selected_flat %}selected{% endif %}>{{ fl }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </form>
+
+      <hr>
+      {% if show_only_export %}
+        <div class="alert alert-info">All floors selected. Use the Export button to download the building-wise report.</div>
+      {% elif ordered_keys_all|length == 0 %}
+        <div class="alert alert-warning">No rows found for this selection.</div>
+      {% else %}
+        {% for k in ordered_keys_all %}
+          {% set idx = k[0] %}
+          {% set cat = k[1] %}
+          <h6 class="mt-3">{{ cat }}</h6>
+          <ul class="list-group mb-3">
+            {% if items_by_cat.get(k) %}
+              {% for it in items_by_cat[k] %}
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                  <div>
+                    {% if it.status and it.status|upper == 'PASSED' %}
+                      <span title="Passed" class="me-1">✓</span>
+                    {% endif %}
+                    {% if it.url %}
+                      <a href="{{ it.url }}" target="_blank" rel="noopener">{{ it.checklist }}</a>
+                    {% else %}
+                      {{ it.checklist }}
+                    {% endif %}
+                    {% if it.status and it.status|upper != 'PASSED' %}
+                      <span class="badge text-bg-secondary ms-2">{{ it.stage }}</span>
+                      <span class="badge text-bg-info ms-1">{{ it.status }}</span>
+                    {% endif %}
+                  </div>
+                  {% if it.date %}
+                    <span class="text-muted small">{{ it.date }}</span>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            {% else %}
+                <li class="list-group-item">Checklist isn't available.</li>
+            {% endif %}
+          </ul>
+        {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+  <div class="mt-3">
+    <a class="btn btn-outline-primary" href="{{ url_for('flat_report_export', path=path, project=selected_project, building=selected_building, floor=selected_floor) }}">Export Excel (status grid)</a>
+  </div>
+{% endblock %}

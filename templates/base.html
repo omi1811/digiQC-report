@@ -3,28 +3,138 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}EQC Tools{% endblock %}</title>
+    <meta name="theme-color" content="#0d6efd">
+  <title>{% block title %}digiQC Reports{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" sizes="any">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <style>
-      body { padding-top: 2rem; padding-bottom: 2rem; }
+  body { padding-bottom: 2rem; background-color: #0e0e0e; color: #e9ecef; }
       .card + .card { margin-top: 1rem; }
-      .container { max-width: 980px; }
       .muted { color: #6c757d; }
+      .text-truncate-200 { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
+      /* Hero banner */
+      .hero { background: linear-gradient(135deg, #0d6efd, #6610f2); color: #fff; border-radius: 1rem; padding: 1.25rem 1.5rem; box-shadow: 0 0.5rem 1rem rgba(13,110,253,.25); }
+      .hero .lead { opacity: .95; }
+      /* Card hover effect */
+      .card.card-hover { transition: transform .15s ease, box-shadow .15s ease; }
+      .card.card-hover:hover { transform: translateY(-2px); box-shadow: 0 .5rem 1rem rgba(0,0,0,.15); }
+      /* Feature list helpers */
+      .feature-icon { width: 2.5rem; height: 2.5rem; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: linear-gradient(135deg,#0d6efd,#6f42c1); color:#fff; box-shadow: 0 .25rem .5rem rgba(13,110,253,.2); flex: 0 0 auto; }
+      .info-card { background: #fff; border-radius: .75rem; border: 1px solid rgba(0,0,0,.06); box-shadow: 0 .5rem 1rem rgba(0,0,0,.05); }
+  /* Modal readability on dark background */
+  .modal-content { background-color: #fff; color: #212529; }
+  .modal-header, .modal-body, .modal-footer { color: #212529; }
+  .modal .form-label { color: #212529; }
+  .modal .form-control::placeholder { color: #6c757d; }
+  /* Ensure readability inside cards on dark background */
+  .card, .card .card-body { color: #212529; }
+  /* Dark form control placeholders support */
+  .form-control.bg-dark::placeholder { color: #adb5bd; }
+  /* Navbar polish */
+  .navbar::after { content:""; display:block; height:2px; background: linear-gradient(90deg,#0d6efd,#6f42c1); }
+  .navbar .nav-link { color: rgba(255,255,255,.8); }
+  .navbar .nav-link:hover, .navbar .nav-link:focus { color: #fff; }
+  .navbar .navbar-brand { letter-spacing: .2px; }
     </style>
   </head>
   <body>
-    <div class="container">
-      <nav class="navbar navbar-light mb-4 d-flex justify-content-between align-items-center">
-        <span class="navbar-brand h1 mb-0">EQC Tools</span>
-        <div class="d-flex align-items-center gap-3">
-          <span class="muted small">No database. Files are not stored.</span>
-          {% if session.get('user') %}
-            <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logout') }}">Logout</a>
-          {% endif %}
+  <nav class="navbar navbar-expand-md navbar-dark bg-dark border-bottom sticky-top shadow-sm">
+      <div class="container-fluid">
+        <a class="navbar-brand d-flex align-items-center" href="{{ url_for('index') }}">
+          <i class="bi bi-bar-chart-fill me-2 text-primary"></i>
+          <span class="fw-semibold">digiQC Reports</span>
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNav" aria-controls="mainNav" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="mainNav">
+          <ul class="navbar-nav me-auto mb-2 mb-md-0">
+            <li class="nav-item"><a class="nav-link" href="{{ url_for('index') }}"><i class="bi bi-house-door"></i> Home</a></li>
+            <li class="nav-item"><a class="nav-link" href="{{ url_for('reports_page') }}"><i class="bi bi-file-earmark-text"></i> Reports</a></li>
+            <li class="nav-item"><a class="nav-link" href="{{ url_for('dashboards_page') }}"><i class="bi bi-bar-chart"></i> Dashboards</a></li>
+          </ul>
+          <div class="d-flex align-items-center gap-2">
+            <span class="muted small d-none d-md-inline">No database. Files are not stored.</span>
+            {% if session.get('eqc_file_name') %}
+              <span class="badge text-bg-light" title="EQC file"><i class="bi bi-file-earmark-spreadsheet me-1"></i><span class="text-truncate-200">{{ session.get('eqc_file_name') }}</span></span>
+            {% endif %}
+            {% if session.get('issues_file_name') %}
+              <span class="badge text-bg-light" title="Issues file"><i class="bi bi-file-earmark-text me-1"></i><span class="text-truncate-200">{{ session.get('issues_file_name') }}</span></span>
+            {% endif %}
+            {% set ext_name = session.get('issues_external_name', None) %}
+            {% if ext_name %}
+              <span class="badge text-bg-light" title="External person"><i class="bi bi-person-badge me-1"></i>{{ ext_name }}</span>
+            {% endif %}
+            {% if session.get('user') %}
+              <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#uploadModal"><i class="bi bi-upload"></i> Uploads</button>
+            {% endif %}
+            {% if session.get('user') %}
+              <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logout') }}">Logout</a>
+            {% endif %}
+          </div>
         </div>
-      </nav>
+      </div>
+    </nav>
+
+    <main class="container py-3">
       {% block content %}{% endblock %}
+    </main>
+
+    <!-- Upload Modal -->
+    <div class="modal fade" id="uploadModal" tabindex="-1" aria-labelledby="uploadModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="uploadModalLabel">Set Files for this Session</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <form class="mb-3" method="post" action="{{ url_for('set_eqc_file', next=request.path ~ '?keepUpload=1') }}" enctype="multipart/form-data">
+              <label class="form-label">EQC file (.csv, .tsv)</label>
+              <input class="form-control" type="file" name="eqc" accept=".csv,.tsv,.txt" required>
+              <div class="d-grid mt-2"><button class="btn btn-primary" type="submit">Set EQC File</button></div>
+            </form>
+            <hr>
+            <form method="post" action="{{ url_for('set_issues_file', next=request.path) }}" enctype="multipart/form-data">
+              <label class="form-label">Issues file (.csv, .tsv)</label>
+              <input class="form-control" type="file" name="issues" accept=".csv,.tsv,.txt" required>
+              <div class="d-grid mt-2"><button class="btn btn-secondary" type="submit">Set Issues File</button></div>
+            </form>
+            
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-success" data-bs-dismiss="modal"><i class="bi bi-check2"></i> Done</button>
+          </div>
+        </div>
+      </div>
     </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      (function(){
+        try {
+          const params = new URLSearchParams(window.location.search || '');
+          if (params.get('keepUpload') === '1' || params.get('openUpload') === '1') {
+            const modalEl = document.getElementById('uploadModal');
+            if (modalEl && window.bootstrap) {
+              const m = new bootstrap.Modal(modalEl);
+              m.show();
+              params.delete('keepUpload');
+              params.delete('openUpload');
+              const qs = params.toString();
+              const newUrl = window.location.pathname + (qs ? ('?' + qs) : '') + window.location.hash;
+              window.history.replaceState({}, '', newUrl);
+            }
+          }
+        } catch (e) { /* ignore */ }
+        // Enable Bootstrap tooltips globally
+        try {
+          const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+          tooltipTriggerList.forEach(function (tooltipTriggerEl) { new bootstrap.Tooltip(tooltipTriggerEl); });
+        } catch(e) { /* ignore */ }
+      })();
+    </script>
   </body>
 </html>

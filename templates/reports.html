@@ -1,0 +1,75 @@
+{% extends 'base.html' %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+  <div class="hero mb-3 d-flex justify-content-between align-items-center">
+    <div>
+      <h3 class="mb-1"><i class="bi bi-file-earmark-text me-2"></i>Reports</h3>
+      <p class="lead mb-0">Download-ready views with consistent formatting and polished Excel output.</p>
+    </div>
+    <a href="{{ url_for('index') }}" class="btn btn-light btn-sm"><i class="bi bi-arrow-left"></i> Home</a>
+  </div>
+  <div class="row row-cols-1 row-cols-md-2 g-3">
+    <div class="col">
+      <div class="card h-100 card-hover">
+        <div class="card-body">
+          <h5 class="card-title"><i class="bi bi-calendar me-2 text-primary"></i>Daily EQC report</h5>
+          <p class="card-text">Cumulative, This Month and Today counts per project.</p>
+          <a class="btn btn-primary w-100" href="{{ url_for('daily_dashboard_get') }}">Open</a>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card h-100 card-hover">
+        <div class="card-body">
+          <h5 class="card-title"><i class="bi bi-list-check me-2 text-danger"></i>Daily Issues report</h5>
+          <p class="card-text">Quality issues split as External vs Internal per project.</p>
+          <a class="btn btn-outline-danger w-100" href="{{ url_for('issues_daily_dashboard') }}">Open</a>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card h-100 card-hover">
+        <div class="card-body">
+          <h5 class="card-title"><i class="bi bi-grid me-2 text-success"></i>Flat-wise EQC report</h5>
+          <p class="card-text">Explore building → floor → flat with latest checklist status; export to Excel.</p>
+          <a class="btn btn-success w-100" href="{{ url_for('flat_report_index') }}">Open</a>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card h-100 card-hover">
+        <div class="card-body">
+          <h5 class="card-title"><i class="bi bi-file-earmark-excel me-2 text-success"></i>EQC Detailed Workbook (Excel)</h5>
+          <p class="card-text">Generate Weekly/Monthly/Cumulative workbook across projects.</p>
+          <form method="post" action="{{ url_for('weekly_report') }}">
+            <button class="btn btn-outline-success w-100" type="submit">Generate</button>
+          </form>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card h-100 card-hover">
+        <div class="card-body">
+          <h5 class="card-title"><i class="bi bi-person-lines-fill me-2 text-primary"></i>External Issues report</h5>
+          <p class="card-text">External-only counts per project (Cumulative/Month/Today). Export to Excel.</p>
+          <div class="d-grid gap-2">
+            <a class="btn btn-outline-primary" href="{{ url_for('external_report') }}">Open report</a>
+            <a class="btn btn-primary" href="{{ url_for('external_report_export') }}">Export Excel</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card h-100 card-hover">
+        <div class="card-body">
+          <h5 class="card-title"><i class="bi bi-file-earmark-excel me-2 text-info"></i>Activity wise stage wise instructions details</h5>
+          <p class="card-text">Run the full pipeline and download <code>Activity wise stage wise instructions details &lt;date&gt;.xlsx</code> (or fallback).</p>
+          <div class="d-grid gap-2">
+            <a class="btn btn-outline-info" href="{{ url_for('inst_report_page') }}">Open</a>
+            <a class="btn btn-info" href="{{ url_for('inst_report_build') }}">Build Report</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

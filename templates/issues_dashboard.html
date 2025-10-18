@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% block title %}Daily Issues Dashboard{% endblock %}
+{% block content %}
+  <a href="{{ url_for('reports_page') }}" class="btn btn-outline-secondary btn-sm mb-3"><i class="bi bi-arrow-left"></i> Back to Reports</a>
+  <h3 class="mb-3">Daily Issues Dashboard <span class="text-muted">({{ target }})</span></h3>
+  {% if external_name %}
+    <p class="text-muted">External person: <strong>{{ external_name }}</strong></p>
+  {% endif %}
+  {% if not data %}
+    <div class="alert alert-warning">No data available for the uploaded file/date.</div>
+  {% endif %}
+  {% for proj, vals in data.items() %}
+    <div class="card">
+      <div class="card-body">
+        <h5 class="card-title">{{ proj }}</h5>
+        <div class="row g-3">
+          {% for cat in ['External','Internal'] %}
+          <div class="col-12 col-md-6">
+            <div class="table-responsive">
+              <table class="table table-sm table-bordered align-middle">
+                <thead class="table-light">
+                  <tr>
+                    <th colspan="4">{{ cat }}</th>
+                  </tr>
+                  <tr>
+                    <th scope="col"></th>
+                    <th scope="col">Total</th>
+                    <th scope="col">Open</th>
+                    <th scope="col">Closed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th scope="row">Cumulative</th>
+                    <td>{{ vals[cat]['all'].total }}</td>
+                    <td>{{ vals[cat]['all'].open }}</td>
+                    <td>{{ vals[cat]['all'].closed }}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">This Month</th>
+                    <td>{{ vals[cat]['month'].total }}</td>
+                    <td>{{ vals[cat]['month'].open }}</td>
+                    <td>{{ vals[cat]['month'].closed }}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Today</th>
+                    <td>{{ vals[cat]['today'].total }}</td>
+                    <td>{{ vals[cat]['today'].open }}</td>
+                    <td>{{ vals[cat]['today'].closed }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+{% endblock %}

@@ -91,11 +91,31 @@ def _filter_quality(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _tag_external(df: pd.DataFrame, external_name: str) -> pd.DataFrame:
-    target = (external_name or "").strip().upper()
+    """Tag issues as External vs Internal exactly (no partials).
+
+    - Blank external_name => all Internal
+    - Case-insensitive exact match on 'Raised By' after stripping
+    - Multiple names supported via comma or pipe separators
+    """
+    target_raw = (external_name or "").strip()
     if "Raised By" not in df.columns:
         df["Raised By"] = ""
-    # Hard match: equality after stripping + case-folding
-    df["__External"] = df["Raised By"].astype(str).map(lambda x: x.strip().upper() == target)
+    if target_raw == "":
+        df["__External"] = False
+        df["__Category"] = "Internal"
+        return df
+    import re as _re
+    tokens = [t.strip() for t in _re.split(r"[\|,]", target_raw) if t.strip()]
+    up_tokens = [t.upper() for t in tokens]
+
+    def _is_external(name: str) -> bool:
+        s = (name or "").strip().upper()
+        for tok in up_tokens:
+            if tok and s == tok:
+                return True
+        return False
+
+    df["__External"] = df["Raised By"].astype(str).map(_is_external)
     df["__Category"] = df["__External"].map(lambda x: "External" if x else "Internal")
     return df
 

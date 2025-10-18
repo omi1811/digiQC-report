@@ -1,0 +1,139 @@
+{% extends 'base.html' %}
+{% block title %}External Issues Report{% endblock %}
+{% block content %}
+  <a href="{{ url_for('reports_page') }}" class="btn btn-outline-secondary btn-sm mb-3"><i class="bi bi-arrow-left"></i> Back to Reports</a>
+  <h3 class="mb-1">External Issues Report</h3>
+  <form class="row gy-2 gx-2 align-items-end mb-3" method="get" action="{{ url_for('external_report') }}">
+    <div class="col-md-5">
+      <label class="form-label">Site (Project)</label>
+      <select class="form-select" name="project">
+        {% for p in projects or [] %}
+          <option value="{{ p }}" {% if selected_project==p %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Reference date</label>
+      <input class="form-control" type="date" name="date" value="">
+    </div>
+    <div class="col-md-2">
+      <button class="btn btn-primary w-100" type="submit">Update</button>
+    </div>
+    <div class="col-md-2">
+      <a class="btn btn-outline-primary w-100" href="{{ url_for('external_report_export', project=selected_project) }}">Export</a>
+    </div>
+  </form>
+  {% if not external_name %}
+    <div class="alert alert-warning">No external auditor is set. Use Home to set the exact name to see External-only data.</div>
+  {% endif %}
+
+  <div class="mb-3">
+    <div class="d-flex justify-content-between flex-wrap">
+      <div>
+        <div class="text-muted small">Site</div>
+        <div class="fw-semibold">{{ selected_project or '-' }}</div>
+      </div>
+      <div>
+        <div class="text-muted small">Date</div>
+        <div class="fw-semibold">{{ header_date }}</div>
+      </div>
+      <div>
+        <div class="text-muted small">External</div>
+        <div class="fw-semibold">{{ external_name or '-' }}</div>
+      </div>
+    </div>
+  </div>
+
+  {% if summary %}
+    <div class="table-responsive mb-4">
+      <table class="table table-sm table-bordered align-middle">
+        <thead class="table-light">
+          <tr>
+            <th></th>
+            <th>Instructions</th>
+            <th>Total</th>
+            <th>Open</th>
+            <th>Closed</th>
+            <th>%</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Previous</th>
+            <td>—</td>
+            <td>{{ summary.previous.total }}</td>
+            <td>{{ summary.previous.open }}</td>
+            <td>{{ summary.previous.closed }}</td>
+            <td>{{ '%.2f'|format(summary.previous.pct) }}%</td>
+          </tr>
+          <tr>
+            <th>Today's</th>
+            <td>—</td>
+            <td>{{ summary.today.total }}</td>
+            <td>{{ summary.today.open }}</td>
+            <td>{{ summary.today.closed }}</td>
+            <td>{{ '%.2f'|format(summary.today.pct) }}%</td>
+          </tr>
+          <tr>
+            <th>Total</th>
+            <td>—</td>
+            <td>{{ summary.total.total }}</td>
+            <td>{{ summary.total.open }}</td>
+            <td>{{ summary.total.closed }}</td>
+            <td>{{ '%.2f'|format(summary.total.pct) }}%</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="alert alert-info">No External issues found for this site/date.</div>
+  {% endif %}
+
+  {% for sect in sections %}
+    <h5 class="mt-3">{{ sect.date }}</h5>
+    <div class="table-responsive mb-4">
+      <table class="table table-sm table-bordered align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>Sr. No.</th>
+            <th>Project Name</th>
+            <th>Location / Reference</th>
+            <th>Description</th>
+            <th>Recommendation</th>
+            <th>Raised By</th>
+            <th>Raised On Date</th>
+            <th>Raised On Time</th>
+            <th>Deadline Date</th>
+            <th>Deadline Time</th>
+            <th>Type</th>
+            <th>Tag 1</th>
+            <th>Assigned Team</th>
+            <th>Assigned Team User</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in sect.rows %}
+            <tr>
+              <td>{{ r.sr }}</td>
+              <td>{{ r.project }}</td>
+              <td>{{ r.location }}</td>
+              <td>{{ r.description }}</td>
+              <td>{{ r.recommendation }}</td>
+              <td>{{ r.raised_by }}</td>
+              <td>{{ r.raised_on_date }}</td>
+              <td>{{ r.raised_on_time }}</td>
+              <td>{{ r.deadline_date }}</td>
+              <td>{{ r.deadline_time }}</td>
+              <td>{{ r.type }}</td>
+              <td>{{ r.tag1 }}</td>
+              <td>{{ r.assigned_team }}</td>
+              <td>{{ r.assigned_user }}</td>
+              <td>{{ r.status }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endfor %}
+{% endblock %}

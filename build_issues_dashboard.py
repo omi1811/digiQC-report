@@ -159,7 +159,31 @@ def main(argv: List[str]) -> None:
         alt = os.path.splitext(issues_path)[0] + ".scv"
         if os.path.exists(alt):
             issues_path = alt
+    # If still not found, try to autodiscover a likely Instructions CSV (latest by mtime)
+    if not os.path.exists(issues_path):
+        candidates: list[str] = []
+        try:
+            for root, _dirs, files in os.walk(os.getcwd()):
+                for f in files:
+                    fl = f.lower()
+                    if not fl.endswith(".csv"):
+                        continue
+                    if fl.startswith("csv-instruction-latest-report") or ("instruction" in fl):
+                        candidates.append(os.path.join(root, f))
+        except Exception:
+            candidates = []
+        if candidates:
+            # pick the most recently modified file
+            issues_path = max(candidates, key=lambda p: os.path.getmtime(p))
+            print(f"[info] Using autodetected issues file: {issues_path}")
+        else:
+            print("[warn] No issues CSV found. Provide --issues path to a Combined_Instructions.csv.")
+            print()
+            return
     issues_res = issues_summary_by_project(issues_path, target, args.projects)
+    if not issues_res:
+        print(f"[info] No issues to report for {target.strftime('%d-%m-%Y')} (file empty or all filtered as Safety)")
+        return
     print_issues_console(issues_res, target)
 
 

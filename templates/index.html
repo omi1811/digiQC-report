@@ -1,36 +1,118 @@
 {% extends 'base.html' %}
-{% block title %}EQC Tools{% endblock %}
+{% block title %}Home · digiQC Reports{% endblock %}
 {% block content %}
-  <div class="row">
-    <div class="col-md-12">
-  <div class="alert alert-info">Upload your digiQC EQC Latest Log file below. We don't store your data.</div>
+  <div class="hero mb-3 d-flex justify-content-between align-items-center">
+    <div>
+      <h3 class="mb-1"><i class="bi bi-house-door me-2"></i>Home</h3>
+      <p class="lead mb-0">Set your context and jump into reports and dashboards.</p>
     </div>
   </div>
-  <div class="row">
-    <div class="col-md-12">
-      <div class="card">
+  <div class="row g-3 justify-content-center">
+    <div class="col-12 col-lg-8 col-xl-7">
+      <div class="card h-100 card-hover text-center">
         <div class="card-body">
-          <h5 class="card-title">Daily Dashboard</h5>
-          <p class="card-text">See cumulative, this-month, and today's counts per project.</p>
-          <form method="post" action="{{ url_for('daily_dashboard') }}" enctype="multipart/form-data">
-            <div class="mb-3">
-              <input class="form-control" type="file" name="eqc" accept=".csv,.tsv,.txt" required>
+          <h5 class="card-title d-flex align-items-center justify-content-center"><i class="bi bi-person-gear me-2 text-primary"></i>Set External Auditor</h5>
+          <p class="text-muted mb-3">Optional. Leave empty if there's no external auditor. Exact name match (case-insensitive). Multiple names supported.</p>
+          <form method="post" action="{{ url_for('set_issues_external') }}">
+            <div class="position-relative mx-auto" style="max-width: 560px;">
+              <div class="input-group">
+                <span class="input-group-text"><i class="bi bi-person-badge"></i></span>
+                <input class="form-control" type="text" name="external_name" placeholder="e.g., Omkar or 'Omkar, John' for multiple" value="{{ session.get('issues_external_name', '') }}" autocomplete="off">
+              </div>
+              <div id="ext-suggest-menu" class="dropdown-menu w-100"></div>
             </div>
-            <button class="btn btn-primary" type="submit">Show Daily Dashboard</button>
+            <div class="d-grid mt-3 mx-auto" style="max-width: 240px;"><button class="btn btn-primary" type="submit">Save External Name</button></div>
           </form>
+          {% set ext_name = (session.get('issues_external_name', '') or '').strip() %}
+          {% if ext_name %}
+            <div class="mt-2 small">Current: <span class="badge text-bg-light">{{ ext_name }}</span></div>
+          {% else %}
+            <div class="mt-2 small text-muted">Current: None (all issues treated as Internal)</div>
+          {% endif %}
+          {% if top_names %}
+          <div class="mt-3">
+            <div class="small text-muted mb-1">Quick picks (from your Issues file):</div>
+            <div class="d-flex flex-wrap gap-2 justify-content-center">
+              {% for name, cnt in top_names %}
+                <button type="button" class="btn btn-sm btn-light" onclick="document.querySelector('input[name=external_name]').value='{{ name }}'">{{ name }} <span class="badge text-bg-secondary">{{ cnt }}</span></button>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+          <div class="mt-3">
+            <details>
+              <summary class="small text-muted">Tips for matching</summary>
+              <ul class="small mt-2 mb-0">
+                <li>Matches are case-insensitive and require exact name(s) as in the CSV. Use suggestions if unsure.</li>
+                <li>Multiple names can be separated by commas or | (pipe): "Omkar, John" (exact matches only).</li>
+                <li>Not sure of the exact name? Open <a href="{{ url_for('issues_daily_dashboard') }}">Daily Issues report</a> and scan the "Raised By" column values, or check the CSV file.</li>
+              </ul>
+            </details>
+          </div>
+          <script>
+            (function(){
+              const input = document.querySelector('input[name=external_name]');
+              const menu = document.getElementById('ext-suggest-menu');
+              function hide(){ menu.classList.remove('show'); menu.innerHTML=''; }
+              function show(){ if(!menu.classList.contains('show')) menu.classList.add('show'); }
+              input.addEventListener('input', async ()=>{
+                const q = input.value.trim();
+                if (!q){ hide(); return; }
+                try{
+                  const res = await fetch(`/api/suggest-raised-by?q=${encodeURIComponent(q)}&limit=6`);
+                  const items = await res.json();
+                  if (!items || !items.length){ hide(); return; }
+                  menu.innerHTML = '';
+                  for (const it of items){
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'dropdown-item d-flex justify-content-between align-items-center';
+                    btn.innerHTML = `<span>${it.name}</span><span class="badge text-bg-secondary">${it.count}</span>`;
+                    btn.onclick = ()=>{ input.value = it.name; hide(); };
+                    menu.appendChild(btn);
+                  }
+                  show();
+                }catch{ hide(); }
+              });
+              document.addEventListener('click', (e)=>{ if (!menu.contains(e.target) && e.target !== input) hide(); });
+            })();
+          </script>
         </div>
       </div>
-      <div class="card">
-        <div class="card-body">
-          <h5 class="card-title">EQC detailed report</h5>
-          <p class="card-text">Generates a combined Excel workbook (Weekly/Monthly/Cumulative) in Pre, During, Post format (Building wise/Project wise) for download.</p>
-          <form method="post" action="{{ url_for('weekly_report') }}" enctype="multipart/form-data">
-            <div class="mb-3">
-              <input class="form-control" type="file" name="eqc" accept=".csv,.tsv,.txt" required>
-            </div>
-            <button class="btn btn-success" type="submit">Generate Weekly Workbook</button>
-          </form>
+    </div>
+    <div class="col-12">
+      <div class="info-card p-4 bg-white" style="color:#212529;">
+        <div class="d-flex align-items-center mb-3">
+          <span class="feature-icon me-2"><i class="bi bi-info-circle"></i></span>
+          <h5 class="mb-0">About this site</h5>
         </div>
+        <div class="row g-3">
+          <div class="col-12 col-lg-6">
+            <div class="p-3 h-100 bg-white rounded border" style="color:#212529;">
+              <div class="d-flex align-items-center mb-2"><span class="feature-icon me-2" style="background:linear-gradient(135deg,#198754,#20c997)"><i class="bi bi-file-earmark-text"></i></span><h6 class="mb-0">Reports</h6></div>
+              <ul class="mb-2">
+                <li><strong>Daily EQC report</strong>: Pre/During/Post counts (All, This Month, Today).</li>
+                <li><strong>Daily Issues report</strong>: Quality issues split External vs Internal.</li>
+                <li><strong>Flat-wise EQC report</strong>: Building → Floor → Flat; export to Excel.</li>
+                <li><strong>EQC Workbook (Excel)</strong>: Weekly/Monthly/Cumulative across projects.</li>
+                <li><strong>External Issues report</strong>: External-only focus with Excel export.</li>
+              </ul>
+              <a class="btn btn-success btn-sm" href="{{ url_for('reports_page') }}"><i class="bi bi-arrow-right"></i> Go to Reports</a>
+            </div>
+          </div>
+          <div class="col-12 col-lg-6">
+            <div class="p-3 h-100 bg-white rounded border" style="color:#212529;">
+              <div class="d-flex align-items-center mb-2"><span class="feature-icon me-2" style="background:linear-gradient(135deg,#0d6efd,#6f42c1)"><i class="bi bi-bar-chart"></i></span><h6 class="mb-0">Dashboards</h6></div>
+              <ul class="mb-2">
+                <li><strong>Building-wise EQC</strong>: Cumulative Pre/During/Post per building.</li>
+                <li><strong>Building-wise Issues</strong>: Totals/Open/Closed per building with date filters.</li>
+                <li><strong>External focus</strong>: Quick look at External issues trends.</li>
+              </ul>
+              <a class="btn btn-primary btn-sm" href="{{ url_for('dashboards_page') }}"><i class="bi bi-arrow-right"></i> Go to Dashboards</a>
+            </div>
+          </div>
+        </div>
+        <div class="mt-3 small text-muted">Use the <strong>Uploads</strong> button at the top-right to set your EQC and Issues CSV files. Files are kept only for your session and are not stored on the server.</div>
       </div>
     </div>
   </div>
