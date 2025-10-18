@@ -19,7 +19,7 @@
                 <span class="input-group-text"><i class="bi bi-person-badge"></i></span>
                 <input class="form-control" type="text" name="external_name" placeholder="e.g., Omkar or 'Omkar, John' for multiple" value="{{ session.get('issues_external_name', '') }}" autocomplete="off">
               </div>
-              <div id="ext-suggest-menu" class="dropdown-menu w-100"></div>
+              <div id="ext-suggest-menu" class="dropdown-menu w-100" style="position:absolute; top: calc(100% + 2px); left:0; right:0; z-index:1080;"></div>
             </div>
             <div class="d-grid mt-3 mx-auto" style="max-width: 240px;"><button class="btn btn-primary" type="submit">Save External Name</button></div>
           </form>
@@ -55,11 +55,10 @@
               const menu = document.getElementById('ext-suggest-menu');
               function hide(){ menu.classList.remove('show'); menu.innerHTML=''; }
               function show(){ if(!menu.classList.contains('show')) menu.classList.add('show'); }
-              input.addEventListener('input', async ()=>{
-                const q = input.value.trim();
-                if (!q){ hide(); return; }
+              // Fetch suggestions (including when empty to show top picks)
+              async function fetchAndShow(q){
                 try{
-                  const res = await fetch(`/api/suggest-raised-by?q=${encodeURIComponent(q)}&limit=6`);
+                  const res = await fetch(`/api/suggest-raised-by?q=${encodeURIComponent(q||'')}&limit=6`);
                   const items = await res.json();
                   if (!items || !items.length){ hide(); return; }
                   menu.innerHTML = '';
@@ -73,6 +72,12 @@
                   }
                   show();
                 }catch{ hide(); }
+              }
+              input.addEventListener('focus', ()=> fetchAndShow(input.value.trim()));
+              input.addEventListener('input', async ()=>{
+                const q = input.value.trim();
+                if (!q){ await fetchAndShow(''); return; }
+                await fetchAndShow(q);
               });
               document.addEventListener('click', (e)=>{ if (!menu.contains(e.target) && e.target !== input) hide(); });
             })();
