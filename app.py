@@ -243,6 +243,17 @@ app = Flask(__name__)
 # Simple secret key for sessions (override via env SECRET_KEY in production)
 app.secret_key = os.environ.get("SECRET_KEY", "change-me-please")
 
+# --- AdSense config (optional) ---
+app.config["ADSENSE_CLIENT_ID"] = (os.environ.get("ADSENSE_CLIENT_ID", "").strip())
+app.config["ADSENSE_ENABLE"] = (os.environ.get("ADSENSE_ENABLE", "1").strip().lower() in {"1","true","yes","on"}) if app.config["ADSENSE_CLIENT_ID"] else False
+
+@app.context_processor
+def _inject_adsense_config():
+    return {
+        "ADSENSE_CLIENT_ID": app.config.get("ADSENSE_CLIENT_ID", ""),
+        "ADSENSE_ENABLE": app.config.get("ADSENSE_ENABLE", False),
+    }
+
 # Hardcoded simple credentials (no database)
 AUTH_USERNAME = os.environ.get("APP_USERNAME", "admin")
 AUTH_PASSWORD = os.environ.get("APP_PASSWORD", "admin123")
