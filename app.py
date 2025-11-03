@@ -8,7 +8,7 @@ import uuid
 from datetime import date, datetime
 from typing import Dict, List, Tuple
 
-from flask import Flask, render_template, request, send_file, redirect, url_for, session
+from flask import Flask, render_template, request, send_file, redirect, url_for, session, send_from_directory
 from flask import jsonify
 import pandas as pd
 import analysis_eqc as EQC
@@ -249,6 +249,12 @@ AUTH_PASSWORD = os.environ.get("APP_PASSWORD", "admin123")
 
 # Default external person name for issues (can be overridden via UI). Use empty by default.
 DEFAULT_ISSUES_EXTERNAL = os.environ.get("ISSUES_EXTERNAL_NAME", "")
+
+# Public route for ads.txt at domain root
+@app.get("/ads.txt")
+def ads_txt():
+    # Serve the static/ads.txt file as plain text without requiring login
+    return send_from_directory(os.path.join(app.root_path, "static"), "ads.txt", mimetype="text/plain")
 
 def login_required(fn):
     from functools import wraps

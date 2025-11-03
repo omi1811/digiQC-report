@@ -1,0 +1,9 @@
+# ads.txt - Authorized Digital Sellers
+# Replace the placeholder values below with your actual seller info (one per line).
+# Format: domain, publisher_account_id, relationship, certification_authority_id
+# Example entries:
+# google.com, pub-0000000000000000, DIRECT, f08c47fec0942fa0
+# rubiconproject.com, 12345, RESELLER, 0bfd66d529a55807
+# openx.com, 987654321, DIRECT, 6a698e2ec38604c6
+
+# TODO: Add your real ads partners here. Lines starting with # are ignored.
