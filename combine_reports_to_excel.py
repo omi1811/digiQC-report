@@ -32,25 +32,36 @@ def coerce_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
     - Skip obvious text columns like 'Checklists' or 'Building'.
     - For other columns, strip commas/spaces and attempt to convert to numeric.
     - If all non-empty cells convert to numeric, cast column to int (fill empty as 0).
+    
+    Optimized to process columns more efficiently.
     """
     import pandas as _pd
     out = df.copy()
     text_cols = {c.lower() for c in ('checklists', 'building', 'eqc checklist')}
-    for col in out.columns:
-        if str(col).strip().lower() in text_cols:
-            continue
+    
+    # Process all numeric-convertible columns at once
+    cols_to_check = [col for col in out.columns if str(col).strip().lower() not in text_cols]
+    
+    for col in cols_to_check:
         try:
-            s = out[col].astype(str).str.replace(',', '').str.strip()
+            # Strip commas and whitespace
+            s = out[col].astype(str).str.replace(',', '', regex=False).str.strip()
+            
+            # Check if column has any non-empty values
+            non_empty_mask = (s != '') & (s != 'nan') & (s != 'None')
+            if not non_empty_mask.any():
+                continue
+            
+            # Try numeric conversion
+            coerced = _pd.to_numeric(s, errors='coerce')
+            
+            # If all non-empty values converted successfully, use them
+            if coerced[non_empty_mask].notna().all():
+                out[col] = coerced.fillna(0).astype(int)
         except Exception:
+            # Skip columns that fail conversion
             continue
-        non_empty_mask = s.replace('', _pd.NA).notna()
-        non_empty_count = int(non_empty_mask.sum())
-        if non_empty_count == 0:
-            continue
-        coerced = _pd.to_numeric(s.replace('', _pd.NA), errors='coerce')
-        numeric_count = int(coerced.notna().sum())
-        if numeric_count == non_empty_count:
-            out[col] = coerced.fillna(0).astype(int)
+    
     return out
 
 

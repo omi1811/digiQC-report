@@ -387,17 +387,34 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
 mode = args.mode or "weekly"
 
 # --- Split by project and process ---
-# Build canonical project keys
-df["__ProjectKey"] = df.apply(_canonical_project_from_row, axis=1)
+# Build canonical project keys using vectorized operation for better performance
+def _canonical_project_vectorized(df_in: pd.DataFrame) -> pd.Series:
+    """Vectorized version for better performance on large datasets."""
+    result = pd.Series("", index=df_in.index)
+    
+    for col in ("Location L0", "Project", "Project Name"):
+        if col not in df_in.columns:
+            continue
+        
+        mask_needs_value = result == ""
+        if not mask_needs_value.any():
+            break
+        
+        series = df_in.loc[mask_needs_value, col].astype(str).str.strip()
+        canonicalized = series.apply(lambda x: canonicalize_project_name(x) if x else "")
+        result.loc[mask_needs_value] = canonicalized
+    
+    return result
+
+df["__ProjectKey"] = _canonical_project_vectorized(df)
 projects = [p for p in df["__ProjectKey"].astype(str).str.strip().unique() if p and 'demo' not in p.lower()]
 
 def generate_for_mode(run_mode: str) -> None:
     win = filter_by_mode(df, run_mode)
     lbl = "Weekly" if run_mode == "weekly" else ("Monthly" if run_mode == "monthly" else "Cumulative")
     for proj in projects:
-        sub_win = win.copy()
-        sub_win["__ProjectKey"] = sub_win.apply(_canonical_project_from_row, axis=1)
-        sub = sub_win[sub_win["__ProjectKey"].astype(str).str.strip() == proj].copy()
+        # Avoid redundant apply - reuse the already computed __ProjectKey
+        sub = win[win["__ProjectKey"].astype(str).str.strip() == proj].copy()
         site = str(proj).replace(' ', '_')
         process_report(sub, site, lbl)
 

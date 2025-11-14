@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import tempfile
 import uuid
 from datetime import date, datetime
+from functools import lru_cache
 from typing import Dict, List, Tuple
 
 from flask import Flask, render_template, request, send_file, redirect, url_for, session, send_from_directory
@@ -40,6 +42,35 @@ def normalize_stage(stage: str) -> str:
 def canonical_project(row: pd.Series) -> str:
     # Use shared helper with fallback order and robust normalization
     return canonical_project_from_row(row)
+
+
+def canonical_project_vectorized(df: pd.DataFrame) -> pd.Series:
+    """Vectorized version of canonical_project for better performance on large datasets.
+    
+    This implementation is more efficient for large datasets by minimizing row-by-row operations.
+    """
+    # Initialize result series with empty strings
+    result = pd.Series("", index=df.index)
+    
+    # Try columns in preference order, filling in empties from previous attempts
+    for col in ("Location L0", "Project", "Project Name"):
+        if col not in df.columns:
+            continue
+            
+        # Get values where result is still empty
+        mask_needs_value = result == ""
+        if not mask_needs_value.any():
+            break  # All values filled
+            
+        # Get and canonicalize values from this column
+        series = df.loc[mask_needs_value, col].astype(str).str.strip()
+        # Only canonicalize non-empty strings
+        canonicalized = series.apply(lambda x: canonicalize_project_name(x) if x else "")
+        
+        # Update result where we found values
+        result.loc[mask_needs_value] = canonicalized
+    
+    return result
 
 
 def read_eqc_robust(fobj: io.BytesIO) -> pd.DataFrame:
@@ -89,6 +120,39 @@ def _format_xlsx_from_path(xlsx_path: str) -> io.BytesIO:
 
 
 # --- Session-scoped CSV management ---
+
+# Cache for file discovery to avoid repeated os.walk() calls
+_file_cache: Dict[str, Tuple[float, List[str]]] = {}
+_CACHE_TTL = 60  # seconds
+
+def _find_files_cached(pattern_check, cache_key: str) -> List[str]:
+    """Find files matching a pattern with caching to avoid repeated os.walk() calls."""
+    import time
+    current_time = time.time()
+    
+    # Check cache
+    if cache_key in _file_cache:
+        cache_time, cached_files = _file_cache[cache_key]
+        if current_time - cache_time < _CACHE_TTL:
+            # Validate cached files still exist
+            valid_files = [f for f in cached_files if os.path.exists(f)]
+            if valid_files:
+                return valid_files
+    
+    # Perform search
+    candidates: List[str] = []
+    try:
+        for root, _dirs, files in os.walk(os.getcwd()):
+            for f in files:
+                if pattern_check(f):
+                    candidates.append(os.path.join(root, f))
+    except Exception:
+        candidates = []
+    
+    # Update cache
+    _file_cache[cache_key] = (current_time, candidates)
+    return candidates
+
 
 def _ensure_upload_dir() -> str:
     root = os.path.join(tempfile.gettempdir(), "eqc_uploads")
@@ -177,8 +241,8 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
         return {}
     df["__Stage"] = df["Stage"].map(EQC.normalize_stage)
     dates = df.get("Date", pd.Series([None] * len(df), index=df.index)).astype(str).map(EQC._parse_date_safe)
-    # Projects
-    df["__ProjectKey"] = df.apply(canonical_project, axis=1)
+    # Projects - use vectorized version for better performance
+    df["__ProjectKey"] = canonical_project_vectorized(df)
     projects = [p for p in sorted(df["__ProjectKey"].astype(str).str.strip().unique()) if p]
 
     def counts_daily_post_plus_other(frame: pd.DataFrame) -> Dict[str, int]:
@@ -225,7 +289,8 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
     for proj in projects:
         sub = df[df["__ProjectKey"].astype(str).str.strip() == proj]
         dates_sub = dates.loc[sub.index]
-        month_mask = dates_sub.apply(lambda d: bool(d and d.year == target.year and d.month == target.month))
+        # Vectorized date comparisons for better performance
+        month_mask = (dates_sub.dt.year == target.year) & (dates_sub.dt.month == target.month) if hasattr(dates_sub, 'dt') else dates_sub.map(lambda d: bool(d and d.year == target.year and d.month == target.month))
         today_mask = dates_sub == target
         out[proj] = {
             # All-time: cumulative roll-up to match workbook 'Cumulative' ALL sums (weekly report mapping)
@@ -346,16 +411,12 @@ def index():
         top_names: List[Tuple[str, int]] = []
         path = _get_session_issues_path()
         if not path or not os.path.exists(path):
-            # Autodetect most recent Instruction CSV in workspace
-            candidates: list[str] = []
-            try:
-                for root, _dirs, files in os.walk(os.getcwd()):
-                    for f in files:
-                        fl = f.lower()
-                        if fl.endswith('.csv') and ('instruction' in fl or fl.startswith('csv-instruction-latest-report')):
-                            candidates.append(os.path.join(root, f))
-            except Exception:
-                candidates = []
+            # Autodetect most recent Instruction CSV in workspace using cached search
+            def check_instruction(f: str) -> bool:
+                fl = f.lower()
+                return fl.endswith('.csv') and ('instruction' in fl or fl.startswith('csv-instruction-latest-report'))
+            
+            candidates = _find_files_cached(check_instruction, "instructions_csv")
             if candidates:
                 path = max(candidates, key=lambda p: os.path.getmtime(p))
         try:
@@ -421,18 +482,12 @@ def daily_dashboard():
     else:
         p = _get_session_eqc_path() or os.path.join(os.getcwd(), "Combined_EQC.csv")
         if not p or not os.path.exists(p):
-            # As a last resort, try to autodetect a likely EQC CSV
-            candidates: list[str] = []
-            try:
-                for root, _dirs, files in os.walk(os.getcwd()):
-                    for fn in files:
-                        fl = fn.lower()
-                        if not fl.endswith('.csv'):
-                            continue
-                        if fl.startswith('combined_eqc') or 'eqc' in fl:
-                            candidates.append(os.path.join(root, fn))
-            except Exception:
-                candidates = []
+            # As a last resort, try to autodetect a likely EQC CSV using cached search
+            def check_eqc(fn: str) -> bool:
+                fl = fn.lower()
+                return fl.endswith('.csv') and (fl.startswith('combined_eqc') or 'eqc' in fl)
+            
+            candidates = _find_files_cached(check_eqc, "eqc_csv")
             if candidates:
                 p = max(candidates, key=lambda q: os.path.getmtime(q))
             else:
@@ -459,18 +514,12 @@ def daily_dashboard_get():
     # Support GET to render using session EQC file or sensible fallbacks
     p = _get_session_eqc_path() or os.path.join(os.getcwd(), "Combined_EQC.csv")
     if not p or not os.path.exists(p):
-        # Autodetect most recent EQC-like CSV
-        candidates: list[str] = []
-        try:
-            for root, _dirs, files in os.walk(os.getcwd()):
-                for fn in files:
-                    fl = fn.lower()
-                    if not fl.endswith('.csv'):
-                        continue
-                    if fl.startswith('combined_eqc') or 'eqc' in fl:
-                        candidates.append(os.path.join(root, fn))
-        except Exception:
-            candidates = []
+        # Autodetect most recent EQC-like CSV using cached search
+        def check_eqc(fn: str) -> bool:
+            fl = fn.lower()
+            return fl.endswith('.csv') and (fl.startswith('combined_eqc') or 'eqc' in fl)
+        
+        candidates = _find_files_cached(check_eqc, "eqc_csv")
         if candidates:
             p = max(candidates, key=lambda q: os.path.getmtime(q))
         else:
@@ -1180,16 +1229,12 @@ def issues_building_dashboard():
     # Determine issues file: ?path=, session, or autodetect
     path = request.args.get("path") or _get_session_issues_path()
     if not path or not os.path.exists(path):
-        # Autodetect most recent Instruction CSV in workspace
-        candidates: list[str] = []
-        try:
-            for root, _dirs, files in os.walk(os.getcwd()):
-                for f in files:
-                    fl = f.lower()
-                    if fl.endswith('.csv') and ('instruction' in fl or fl.startswith('csv-instruction-latest-report')):
-                        candidates.append(os.path.join(root, f))
-        except Exception:
-            candidates = []
+        # Autodetect most recent Instruction CSV in workspace using cached search
+        def check_instruction(f: str) -> bool:
+            fl = f.lower()
+            return fl.endswith('.csv') and ('instruction' in fl or fl.startswith('csv-instruction-latest-report'))
+        
+        candidates = _find_files_cached(check_instruction, "instructions_csv")
         if candidates:
             path = max(candidates, key=lambda p: os.path.getmtime(p))
         else:
@@ -1331,16 +1376,12 @@ def issues_daily_dashboard():
     # Determine issues file from session or autodetect
     path = request.args.get("path") or _get_session_issues_path()
     if not path or not os.path.exists(path):
-        # Autodetect most recent Instruction CSV in workspace
-        candidates: list[str] = []
-        try:
-            for root, _dirs, files in os.walk(os.getcwd()):
-                for f in files:
-                    fl = f.lower()
-                    if fl.endswith('.csv') and ('instruction' in fl or fl.startswith('csv-instruction-latest-report')):
-                        candidates.append(os.path.join(root, f))
-        except Exception:
-            candidates = []
+        # Autodetect most recent Instruction CSV in workspace using cached search
+        def check_instruction(f: str) -> bool:
+            fl = f.lower()
+            return fl.endswith('.csv') and ('instruction' in fl or fl.startswith('csv-instruction-latest-report'))
+        
+        candidates = _find_files_cached(check_instruction, "instructions_csv")
         if candidates:
             path = max(candidates, key=lambda p: os.path.getmtime(p))
         else:
@@ -1361,8 +1402,8 @@ def issues_daily_dashboard():
     ext_name = (session.get("issues_external_name", DEFAULT_ISSUES_EXTERNAL) or "").strip()
     df = ISS._filter_quality(df)
     df = ISS._tag_external(df, ext_name)
-    # Canonical project key
-    df["__ProjectKey"] = df.apply(canonical_project_from_row, axis=1)
+    # Canonical project key - use vectorized version for better performance
+    df["__ProjectKey"] = canonical_project_vectorized(df)
     dates = df.get("Raised On Date").map(ISS._parse_date_safe) if "Raised On Date" in df.columns else pd.Series([None] * len(df), index=df.index)
     masks = ISS._timeframe_masks(dates, target)
     # Build nested: { project: { 'External': {tf: Counts}, 'Internal': {tf: Counts} } }
@@ -1396,15 +1437,12 @@ def external_report():
     # Load issues file (session or autodetect)
     path = request.args.get("path") or _get_session_issues_path()
     if not path or not os.path.exists(path):
-        candidates: list[str] = []
-        try:
-            for root, _dirs, files in os.walk(os.getcwd()):
-                for f in files:
-                    fl = f.lower()
-                    if fl.endswith('.csv') and ('instruction' in fl or fl.startswith('csv-instruction-latest-report')):
-                        candidates.append(os.path.join(root, f))
-        except Exception:
-            candidates = []
+        # Autodetect using cached search
+        def check_instruction(f: str) -> bool:
+            fl = f.lower()
+            return fl.endswith('.csv') and ('instruction' in fl or fl.startswith('csv-instruction-latest-report'))
+        
+        candidates = _find_files_cached(check_instruction, "instructions_csv")
         if candidates:
             path = max(candidates, key=lambda p: os.path.getmtime(p))
         else:
@@ -1428,7 +1466,7 @@ def external_report():
     df = ISS._filter_quality(df)
     df = ISS._tag_external(df, ext_name)
     df = df[df.get("__Category") == "External"]
-    df["__ProjectKey"] = df.apply(canonical_project_from_row, axis=1)
+    df["__ProjectKey"] = canonical_project_vectorized(df)
 
     # Site selection
     projects = sorted([p for p in df["__ProjectKey"].astype(str).str.strip().unique() if p])
