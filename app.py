@@ -20,6 +20,34 @@ import subprocess
 from openpyxl import load_workbook
 from openpyxl.styles import Border, Side, Alignment
 
+# --- Pre-compiled regex patterns for performance ---
+# Building patterns
+_BUILDING_PATTERNS = [
+    re.compile(r"\b(wing|tower|building|block)[\s\-]*([A-Za-z0-9])\b", re.I),
+    re.compile(r"\b([A-Za-z0-9])[\s\-]*(wing|tower|building|block)\b", re.I),
+    re.compile(r"\b(bldg|blk)\.?[\s\-]*([A-Za-z0-9])\b", re.I),
+]
+
+# Floor patterns
+_FLOOR_PATTERNS = [
+    re.compile(r"\b(floor|fl|level)[\s\-]*(\d{1,2})\b", re.I),
+    re.compile(r"\b(\d{1,2})[\s\-]*(floor|fl|level)\b", re.I),
+    re.compile(r"\b(?:f|fl|lvl|l)[\s\-]*(\d{1,2})\b", re.I),
+    re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor)?\b", re.I),
+]
+
+# Flat patterns
+_FLAT_PATTERNS = [
+    re.compile(r"\b(flat|unit|apt|apartment|shop)[\s\-]*([A-Z]?\d{1,4}[A-Z]?)\b", re.I),
+    re.compile(r"\b(room)[\s\-]*(\d{1,4}[A-Z]?)\b", re.I),
+]
+
+# Special location pattern
+_SPECIAL_LOCATION_PATTERN = re.compile(r"\bshear\s*wall\b|stair\s*case|lobby|podium|development|terrace|parking", re.I)
+
+# Token split pattern
+_TOKEN_SPLIT_PATTERN = re.compile(r"[>/|,;:\-–—]+")
+
 # --- Helpers (schema + stage normalization) ---
 
 def parse_date_safe(s: str) -> date | None:
@@ -741,33 +769,52 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
         df["__Date"] = df["Date"].astype(str).map(EQC._parse_date_safe)
     else:
         df["__Date"] = None
-    # Project key
-    df["__Project"] = df.apply(canonical_project_from_row, axis=1)
+    # Project key - use vectorized version for better performance
+    df["__Project"] = canonical_project_vectorized(df)
 
-    # Preferred building label per (Project, Letter)
+    # Preferred building label per (Project, Letter) - optimized with vectorized operations
     import re as _re_map
     bldg_pref_map: Dict[_Tuple[str, str], str] = {}
     pref_counts: Dict[_Tuple[str, str, str], int] = {}
+    
     if "Location L1" in df.columns:
-        for _, r in df.iterrows():
-            proj = str(r.get("__Project", "") or "").strip()
-            l1 = str(r.get("Location L1", "") or "").strip()
-            if not proj or not l1:
-                continue
-            m = _re_map.search(r"\b(wing|tower|building|block|bldg|blk)\b[\s\-]*([A-Za-z0-9])\b", l1, _re_map.I) or \
-                _re_map.search(r"\b([A-Za-z0-9])\b[\s\-]*\b(wing|tower|building|block|bldg|blk)\b", l1, _re_map.I)
-            if m:
-                g = m.groups()
-                letter = g[1] if g[0].lower() in ("wing","tower","building","block","bldg","blk") else g[0]
-                key = (proj, str(letter).upper())
-                pref_counts[(proj, str(letter).upper(), l1)] = pref_counts.get((proj, str(letter).upper(), l1), 0) + 1
-        for (proj, letter, label), cnt in pref_counts.items():
-            cur = bldg_pref_map.get((proj, letter))
-            if cur is None or cnt > pref_counts.get((proj, letter, cur), 0):
-                bldg_pref_map[(proj, letter)] = label
+        # Pre-compile regex patterns for reuse
+        building_patterns = [
+            _re_map.compile(r"\b(wing|tower|building|block|bldg|blk)\b[\s\-]*([A-Za-z0-9])\b", _re_map.I),
+            _re_map.compile(r"\b([A-Za-z0-9])\b[\s\-]*\b(wing|tower|building|block|bldg|blk)\b", _re_map.I)
+        ]
+        
+        # Vectorized extraction where possible
+        projects_series = df["__Project"].astype(str).str.strip()
+        l1_series = df["Location L1"].astype(str).str.strip()
+        
+        # Only iterate over non-empty rows
+        mask_valid = (projects_series != "") & (l1_series != "")
+        if mask_valid.any():
+            for idx in df[mask_valid].index:
+                proj = projects_series.loc[idx]
+                l1 = l1_series.loc[idx]
+                
+                # Try to match building patterns
+                m = None
+                for pat in building_patterns:
+                    m = pat.search(l1)
+                    if m:
+                        break
+                
+                if m:
+                    g = m.groups()
+                    letter = g[1] if g[0].lower() in ("wing","tower","building","block","bldg","blk") else g[0]
+                    key = (proj, str(letter).upper())
+                    pref_counts[(proj, str(letter).upper(), l1)] = pref_counts.get((proj, str(letter).upper(), l1), 0) + 1
+            
+            for (proj, letter, label), cnt in pref_counts.items():
+                cur = bldg_pref_map.get((proj, letter))
+                if cur is None or cnt > pref_counts.get((proj, letter, cur), 0):
+                    bldg_pref_map[(proj, letter)] = label
 
     def _infer_bff(row: pd.Series) -> _Tuple[str, str, str]:
-        import re as _re
+        # Use module-level pre-compiled patterns for better performance
         b = str(row.get("Location L1", "") or "").strip()
         f = str(row.get("Location L2", "") or "").strip()
         fl = str(row.get("Location L3", "") or "").strip()
@@ -781,18 +828,13 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                 sources.append(str(row[c]))
         tokens: _List[str] = []
         for s in sources:
-            tokens.extend([t.strip() for t in _re.split(r"[>/|,;:\-–—]+", str(s)) if t.strip()])
+            tokens.extend([t.strip() for t in _TOKEN_SPLIT_PATTERN.split(str(s)) if t.strip()])
         if not b:
-            patt_building = [
-                _re.compile(r"\b(wing|tower|building|block)[\s\-]*([A-Za-z0-9])\b", _re.I),
-                _re.compile(r"\b([A-Za-z0-9])[\s\-]*(wing|tower|building|block)\b", _re.I),
-                _re.compile(r"\b(bldg|blk)\.?[\s\-]*([A-Za-z0-9])\b", _re.I),
-            ]
             proj = str(row.get("__Project", "") or "").strip()
             letter_found = None
             type_found = None
             for s in sources + tokens:
-                for pat in patt_building:
+                for pat in _BUILDING_PATTERNS:
                     m = pat.search(s)
                     if m:
                         g1, g2 = m.groups()
@@ -816,23 +858,22 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                 sv = str(row.get(loc_field, "") or "").strip()
                 if not sv:
                     continue
-                if _re.search(r"\bshear\s*wall\b|stair\s*case|lobby|podium|development|terrace|parking", sv, _re.I):
+                if _SPECIAL_LOCATION_PATTERN.search(sv):
                     f = sv
                     break
-                m = _re.search(r"\b(floor|fl|level)[\s\-]*(\d{1,2})\b", sv, _re.I) or _re.search(r"\b(\d{1,2})[\s\-]*(floor|fl|level)\b", sv, _re.I) or _re.search(r"\b(?:f|fl|lvl|l)[\s\-]*(\d{1,2})\b", sv, _re.I) or _re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor)?\b", sv, _re.I)
+                # Try floor patterns in sequence
+                m = None
+                for pat in _FLOOR_PATTERNS:
+                    m = pat.search(sv)
+                    if m:
+                        break
                 if m:
                     num = m.group(m.lastindex or 1)
                     f = f"Floor {num}"
                     break
         if not f:
-            patt_floor = [
-                _re.compile(r"\b(floor|fl|level)[\s\-]*(\d{1,2})\b", _re.I),
-                _re.compile(r"\b(\d{1,2})[\s\-]*(floor|fl|level)\b", _re.I),
-                _re.compile(r"\b(?:f|fl|lvl|l)[\s\-]*(\d{1,2})\b", _re.I),
-                _re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor)?\b", _re.I),
-            ]
             for s in sources + tokens:
-                for pat in patt_floor:
+                for pat in _FLOOR_PATTERNS:
                     m = pat.search(s)
                     if m:
                         num = m.group(m.lastindex or 1)
@@ -842,15 +883,13 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                     break
         if not fl:
             # Require an explicit type like Flat/Shop/Unit/Apt/Room to avoid misreading product codes (e.g., "Samshield XL 1500") as flats
-            patt_flat = [
-                _re.compile(r"\b(flat|unit|apt|apartment|shop)[\s\-]*([A-Z]?\d{1,4}[A-Z]?)\b", _re.I),
-                _re.compile(r"\b(room)[\s\-]*(\d{1,4}[A-Z]?)\b", _re.I),
-            ]
             for s in sources + tokens:
-                for pat in patt_flat:
+                for pat in _FLAT_PATTERNS:
                     m = pat.search(s)
                     if m:
                         val = m.group(2) if m.lastindex and m.lastindex >= 2 else m.group(1)
+                        # Use pre-compiled pattern for sub operation - but we need to import re locally
+                        import re as _re
                         core = _re.sub(r"^([A-Z]?)(0+)(\d)", r"\1\3", val)
                         typ = m.group(1).strip().title() if (m.lastindex and m.lastindex >= 2) else "Flat"
                         if typ.lower() not in ("flat","unit","apt","apartment","shop"):
@@ -861,6 +900,10 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                         break
                 if fl:
                     break
+        
+        # Define helper functions that use the imported re module
+        import re as _re
+        
         def _std_floor(x: str) -> str:
             s = (x or "").strip()
             if not s:
@@ -869,6 +912,7 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
             if m and _re.search(r"floor|fl|level|lvl|^\d{1,2}$", s, _re.I):
                 return f"Floor {m.group(1)}"
             return s
+        
         def _std_flat(x: str) -> str:
             s = (x or "").strip()
             if not s:
@@ -884,6 +928,7 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                 core = _re.sub(r"^([A-Z]?)(0+)(\d)", r"\1\3", m.group(1))
                 return f"{t} {core}"
             return s
+        
         return (b or "").strip(), _std_floor(f), _std_flat(fl)
 
     bff = df.apply(_infer_bff, axis=1, result_type="expand")
