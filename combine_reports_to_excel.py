@@ -65,7 +65,8 @@ def load_file(fpath: str) -> pd.DataFrame | None:
 
 def main():
     # Discover all available (project, mode) from files
-    modes = ['Weekly', 'Monthly', 'Cumulative']
+    # NOTE: Changed to Cumulative only per user request (removed Weekly/Monthly)
+    modes = ['Cumulative']
     files_by_mode = {mode: find_mode_files(mode) for mode in modes}
     pairs: list[tuple[str, str]] = []
     paths: dict[tuple[str, str], str] = {}
@@ -78,14 +79,14 @@ def main():
             key = (proj, mode)
             paths[key] = f
             pairs.append(key)
-    # Stable sheet order: group by project name, then mode order Weekly, Monthly, Cumulative
+    # Stable sheet order: group by project name, then mode order
     project_names = sorted({p for p, _ in pairs})
     sheet_order = []
     for p in project_names:
         for m in modes:
             if (p, m) in paths:
                 sheet_order.append((p, m))
-    out_xlsx = 'EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx'
+    out_xlsx = 'EQC_Cumulative_AllProjects.xlsx'
 
     # paths already built above
 

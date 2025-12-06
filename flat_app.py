@@ -19,24 +19,28 @@ from openpyxl.styles import Border, Side, Alignment
 app = Flask(__name__)
 
 # --- Helpers ---
-CATEGORY_ORDER: List[Tuple[str, List[str]]] = [
+# RCC/Structural checklists - apply at FLOOR/POUR level, not flat level
+RCC_CATEGORIES: List[Tuple[str, List[str]]] = [
     (
-    "1. RCC / Structural Stage ",
+        "RCC / Structural",
         [
-            # structural/aluform
             r"\brcc\b|reinforc|shuttering|\bstruct|slab|column|beam|footing",
-            r"aluform|internal\s*handover",
+            r"aluform|internal\s*handover|handover",
         ],
     ),
+]
+
+# Finishing checklists - apply at FLAT level
+FINISHING_CATEGORIES: List[Tuple[str, List[str]]] = [
     (
-        "2. Masonry & Surface Preparation",
+        "Masonry & Surface Preparation",
         [
             r"aac|autoclaved|block\s*masonry|fly\s*ash|brick\s*work",
             r"internal\s*plaster|plaster\s*works|gypsum",
         ],
     ),
     (
-        "3. Waterproofing",
+        "Waterproofing",
         [
             r"waterproof.*toilet|skirting|boxtype|toilet\s*&\s*skirting",
             r"brick\s*bat",
@@ -44,7 +48,7 @@ CATEGORY_ORDER: List[Tuple[str, List[str]]] = [
         ],
     ),
     (
-        "4. Flooring & Finishes",
+        "Flooring & Finishes",
         [
             r"tiling.*dado|dado\s*\(toilet|kitchen\)|kitchen\s*dado",
             r"tiling.*floor|flooring",
@@ -54,7 +58,7 @@ CATEGORY_ORDER: List[Tuple[str, List[str]]] = [
         ],
     ),
     (
-        "5. Carpentry & Metal Works",
+        "Carpentry & Metal Works",
         [
             r"carpentry.*(door\s*frame|shutters?)",
             r"(door\s*frame|shutters?)",
@@ -64,7 +68,7 @@ CATEGORY_ORDER: List[Tuple[str, List[str]]] = [
         ],
     ),
     (
-        "6. MEP (Mechanical, Electrical & Plumbing)",
+        "MEP (Mechanical, Electrical & Plumbing)",
         [
             r"internal\s*plumbing|plumbing\s*works",
             r"drainage.*pvc|bathroom.*drain|kitchen.*drain",
@@ -74,14 +78,14 @@ CATEGORY_ORDER: List[Tuple[str, List[str]]] = [
         ],
     ),
     (
-        "7. Painting & Finishing",
+        "Painting & Finishing",
         [
             r"painting.*internal",
             r"painting.*(railing|grills).*oil",
         ],
     ),
     (
-        "8. Final Cleaning & Handover",
+        "Final Cleaning & Handover",
         [
             r"cleaning.*acid|deep\s*clean",
         ],
@@ -91,17 +95,88 @@ CATEGORY_ORDER: List[Tuple[str, List[str]]] = [
 UNCATEGORIZED_LABEL = "Uncategorized / Other"
 
 
-def map_checklist_to_category(name: str) -> Tuple[int, str]:
+def is_rcc_checklist(name: str) -> bool:
+    """Check if a checklist is RCC/structural (floor-level) vs Finishing (flat-level)."""
     import re as _re
     s = (name or "").lower()
-    for idx, (label, patterns) in enumerate(CATEGORY_ORDER):
+    for _, patterns in RCC_CATEGORIES:
+        for pat in patterns:
+            try:
+                if _re.search(pat, s, _re.I):
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def base_name(n: str) -> str:
+    """Standardize checklist names by removing contractor suffixes (matches Weekly_report.py logic)."""
+    import re
+    if not isinstance(n, str):
+        return str(n)
+    s = n.strip()
+    s_norm = s.lower()
+    
+    # Known standardized names
+    fixes = {
+        r'painting.*internal': 'Painting Works : Internal',
+        r'painting.*external': 'Painting Works : External',
+        r'waterproof.*boxtype': 'Waterproofing works: Toilet and Skirting',
+        r'waterproof.*toilet': 'Waterproofing works: Toilet and Skirting',
+        r'waterproof.*skirting': 'Waterproofing works: Toilet and Skirting',
+        r'tiling.*kitchen.*platform': 'Tiling - Kitchen Platform',
+        r'tiling.*kitchen.*sink': 'Tiling - Kitchen Platform',
+        r'tiling[-\s]*toilet.*dado': 'Tiling - Toilet Dado',
+        r'kitchen\s*dado': 'Kitchen Dado Checklist',
+        r'gypsum\s*plaster': 'Gypsum Plaster Works',
+        r'aac\s*block': 'AAC Block Work',
+        r'\brcc\b.*footing': 'RCC Footing',
+        r'\brcc\b.*column': 'RCC Column',
+        r'\brcc\b.*beam': 'RCC Beam',
+        r'\brcc\b.*slab': 'RCC Slab',
+    }
+    for pat, name in fixes.items():
+        if re.search(pat, s_norm):
+            return name
+    
+    # Remove contractor name at the end (common patterns)
+    # E.g., "GYPSUM PLASTER WORKS  Faujan" -> "GYPSUM PLASTER WORKS"
+    s = re.sub(r'\s{2,}[A-Za-z]+\s*$', '', s)  # Double space followed by word
+    s = re.sub(r'\s+[A-Z][a-z]+\s+[A-Z][a-z]+\s*$', '', s)  # "Om Enterprises" pattern
+    s = re.sub(r'\s*:\s*$', '', s)  # Trailing colon
+    s = re.sub(r'\s+$', '', s)  # Trailing spaces
+    
+    if '.' in s:
+        return s.split('.', 1)[0].strip()
+    if ':' in s and s.split(':', 1)[1].strip():
+        return s  # Keep if there's text after colon
+    elif ':' in s:
+        return s.split(':', 1)[0].strip()
+    
+    return s.strip()
+
+
+def map_checklist_to_category(name: str) -> Tuple[int, str]:
+    """Map checklist to category (for backwards compatibility)."""
+    import re as _re
+    s = (name or "").lower()
+    # Check RCC first
+    for idx, (label, patterns) in enumerate(RCC_CATEGORIES):
         for pat in patterns:
             try:
                 if _re.search(pat, s, _re.I):
                     return idx, label
             except Exception:
                 continue
-    return len(CATEGORY_ORDER), UNCATEGORIZED_LABEL
+    # Check Finishing
+    for idx, (label, patterns) in enumerate(FINISHING_CATEGORIES):
+        for pat in patterns:
+            try:
+                if _re.search(pat, s, _re.I):
+                    return len(RCC_CATEGORIES) + idx, label
+            except Exception:
+                continue
+    return len(RCC_CATEGORIES) + len(FINISHING_CATEGORIES), UNCATEGORIZED_LABEL
 
 
 def robust_read_eqc(path: str) -> pd.DataFrame:
@@ -456,32 +531,47 @@ def flat_report_index():
         reps_flat = _latest_per_checklist(scope_flat)
         reps_floor = _latest_per_checklist(scope_floor)
 
-    # Populate items: category 1 (RCC/Structural) from floor-level reps; others from flat-level reps
-    for src, only_cat1 in ((reps_floor, True), (reps_flat, False)):
+    # Populate items: RCC checklists from floor-level reps; Finishing from flat-level reps
+    rcc_items: List[Dict] = []
+    finishing_items_by_cat: Dict[Tuple[int, str], List[Dict]] = {}
+    
+    for src, is_floor_level in ((reps_floor, True), (reps_flat, False)):
         if src is None or src.empty:
             continue
         for _, row in src.iterrows():
             cl = row["__Checklist"]
+            # Apply base_name for standardization
+            cl_display = base_name(cl)
             url = row.get("__URL", "")
             stage = row.get("__Stage", "")
             status = str(row.get("Status", "")).strip()
-            idx, cat = map_checklist_to_category(cl)
-            if only_cat1 and idx != 0:
-                continue
-            if (idx, cat) not in items_by_cat:
-                items_by_cat[(idx, cat)] = []
-            items_by_cat[(idx, cat)].append({
-                "checklist": cl,
+            
+            item = {
+                "checklist": cl_display,
+                "checklist_raw": cl,
                 "url": url,
                 "stage": stage,
                 "status": status,
                 "date": row.get("__Date"),
-            })
-    # Ensure all categories are present even if empty, for consistent display
-    ordered_keys_all: List[Tuple[int, str]] = []
-    for i, (label, _) in enumerate(CATEGORY_ORDER):
-        ordered_keys_all.append((i, label))
-    ordered_keys_all.append((len(CATEGORY_ORDER), UNCATEGORIZED_LABEL))
+            }
+            
+            if is_rcc_checklist(cl):
+                # RCC checklists go to floor-level RCC table
+                if is_floor_level:
+                    rcc_items.append(item)
+            else:
+                # Finishing checklists go to flat-level Finishing table
+                if not is_floor_level:
+                    idx, cat = map_checklist_to_category(cl)
+                    if (idx, cat) not in finishing_items_by_cat:
+                        finishing_items_by_cat[(idx, cat)] = []
+                    finishing_items_by_cat[(idx, cat)].append(item)
+    
+    # Build ordered keys for Finishing categories
+    ordered_finishing_keys: List[Tuple[int, str]] = []
+    for i, (label, _) in enumerate(FINISHING_CATEGORIES):
+        ordered_finishing_keys.append((len(RCC_CATEGORIES) + i, label))
+    ordered_finishing_keys.append((len(RCC_CATEGORIES) + len(FINISHING_CATEGORIES), UNCATEGORIZED_LABEL))
 
     return render_template(
         "flat_report.html",
@@ -494,8 +584,9 @@ def flat_report_index():
         selected_floor=floor,
         flats=flats_all,
         selected_flat=flat,
-        items_by_cat=items_by_cat,
-        ordered_keys_all=ordered_keys_all,
+        rcc_items=rcc_items,
+        finishing_items_by_cat=finishing_items_by_cat,
+        ordered_finishing_keys=ordered_finishing_keys,
         show_only_export=(floor == "ALL"),
     )
 
@@ -584,6 +675,13 @@ def flat_report_export():
     # Add building name header for clarity
     ws.cell(row=1, column=1, value="Building:")
     ws.cell(row=1, column=2, value=building)
+    
+    # Add legend for symbols
+    ws.cell(row=1, column=4, value="Legend:")
+    ws.cell(row=1, column=5, value="✓ = Passed")
+    ws.cell(row=1, column=6, value="– = In Progress")
+    ws.cell(row=1, column=7, value="✗ = Not Done")
+    
     # Leave row 2 blank, start data at row 3
     ws.append([])
     start_row = 3

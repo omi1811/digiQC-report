@@ -1136,12 +1136,24 @@ def building_dashboard():
     def counts_by_stage(frame: pd.DataFrame) -> Dict[str, int]:
         if frame is None or frame.empty:
             return {"Pre": 0, "During": 0, "Post": 0}
-        s = frame.get("__Stage", pd.Series(["" ] * len(frame), index=frame.index)).astype(str)
-        c = s.value_counts()
+        
+        # Use __Stage which is already normalized (Pre, During, Post, Other)
+        # Note: Reinforcement/Shuttering are mapped to 'Pre' by EQC.normalize_stage
+        c = frame["__Stage"].value_counts()
+        n_pre = int(c.get("Pre", 0))
+        n_during = int(c.get("During", 0))
+        n_post = int(c.get("Post", 0))
+        n_other = int(c.get("Other", 0))
+
+        # Cumulative Logic (matching Weekly_report.py / analysis_eqc.py):
+        # Pre = Total (Pre + During + Post + Other)
+        # During = During + Post + Other
+        # Post = Post + Other
+        
         return {
-            "Pre": int(c.get("Pre", 0)),
-            "During": int(c.get("During", 0)),
-            "Post": int(c.get("Post", 0)),
+            "Pre": n_pre + n_during + n_post + n_other,
+            "During": n_during + n_post + n_other,
+            "Post": n_post + n_other,
         }
 
     data: Dict[str, Dict[str, Dict[str, int]]] = {}
@@ -1642,6 +1654,216 @@ def inst_report_download():
     content = _format_xlsx_from_path(path)
     return send_file(content, as_attachment=True, download_name=dl_name, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+
+# ========== AI ANALYSIS ROUTES ==========
+
+from ai_analysis import AIAnalyzer, analyze_eqc_file, analyze_issues_file, standardize_checklists_file
+
+@app.get("/ai-analysis")
+@login_required
+def ai_analysis_page():
+    """AI Analysis dashboard page."""
+    eqc_file = session.get("eqc_file_name", "")
+    issues_file = session.get("issues_file_name", "")
+    return render_template("ai_analysis.html", 
+                           eqc_file=eqc_file, 
+                           issues_file=issues_file)
+
+
+@app.post("/api/ai/eqc-completion")
+@login_required
+def api_ai_eqc_completion():
+    """API endpoint for EQC completion analysis."""
+    path = _get_session_eqc_path()
+    if not path:
+        return jsonify({"error": "No EQC file uploaded. Please upload a file first."}), 400
+    
+    try:
+        result = analyze_eqc_file(path, use_ai=True)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/ai/issues-patterns")
+@login_required
+def api_ai_issues_patterns():
+    """API endpoint for Issues pattern analysis."""
+    path = _get_session_issues_path()
+    if not path:
+        return jsonify({"error": "No Issues file uploaded. Please upload a file first."}), 400
+    
+    try:
+        result = analyze_issues_file(path, use_ai=True)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/ai/standardize-checklists")
+@login_required
+def api_ai_standardize_checklists():
+    """API endpoint for checklist name standardization."""
+    path = _get_session_eqc_path()
+    if not path:
+        return jsonify({"error": "No EQC file uploaded. Please upload a file first."}), 400
+    
+    try:
+        result = standardize_checklists_file(path, use_ai=True)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ========== ADVANCED ANALYTICS ROUTES ==========
+
+@app.get("/advanced-analytics")
+@login_required
+def advanced_analytics_page():
+    """Render the advanced analytics dashboard page."""
+    eqc_file = os.path.basename(_get_session_eqc_path() or "") or None
+    issues_file = os.path.basename(_get_session_issues_path() or "") or None
+    return render_template("advanced_analytics.html", eqc_file=eqc_file, issues_file=issues_file)
+
+
+@app.post("/api/analytics/overdue-issues")
+@login_required
+def api_overdue_issues():
+    """API endpoint for overdue issues analysis."""
+    path = _get_session_issues_path()
+    if not path:
+        return jsonify({"error": "No Issues file uploaded. Please upload a file first."}), 400
+    
+    try:
+        from advanced_analytics import AdvancedAnalytics
+        import pandas as pd
+        df = pd.read_csv(path)
+        analyzer = AdvancedAnalytics()
+        result = analyzer.analyze_overdue_issues(df)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# Floor Heatmap - Removed (Future Scope)
+# @app.post("/api/analytics/floor-heatmap")
+# def api_floor_heatmap(): pass
+
+
+@app.post("/api/analytics/repeat-offenders")
+@login_required
+def api_repeat_offenders():
+    """API endpoint for repeat offenders analysis."""
+    path = _get_session_issues_path()
+    if not path:
+        return jsonify({"error": "No Issues file uploaded. Please upload a file first."}), 400
+    
+    try:
+        from advanced_analytics import AdvancedAnalytics
+        import pandas as pd
+        df = pd.read_csv(path)
+        analyzer = AdvancedAnalytics()
+        result = analyzer.analyze_repeat_offenders(df)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.post("/api/analytics/post-approval-issues")
+@login_required
+def api_post_approval_issues():
+    """API endpoint for post-approval issue detection."""
+    eqc_path = _get_session_eqc_path()
+    issues_path = _get_session_issues_path()
+    
+    if not eqc_path:
+        return jsonify({"error": "No EQC file uploaded. Please upload a file first."}), 400
+    if not issues_path:
+        return jsonify({"error": "No Issues file uploaded. Please upload a file first."}), 400
+    
+    try:
+        from advanced_analytics import AdvancedAnalytics
+        import pandas as pd
+        eqc_df = pd.read_csv(eqc_path)
+        issues_df = pd.read_csv(issues_path)
+        analyzer = AdvancedAnalytics()
+        result = analyzer.detect_post_approval_issues(eqc_df, issues_df)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ========== COMBINED QUALITY DASHBOARD ==========
+
+@app.get("/quality-dashboard")
+@login_required
+def quality_dashboard_page():
+    """Render the combined quality dashboard page."""
+    from datetime import date
+    import pandas as pd
+    
+    eqc_path = _get_session_eqc_path()
+    issues_path = _get_session_issues_path()
+    
+    if not eqc_path or not issues_path:
+        return render_template("quality_dashboard.html",
+                             error="Please upload both EQC and Issues CSV files first.",
+                             projects=[], dashboard_date=date.today().strftime('%d/%m/%Y'))
+    
+    try:
+        from quality_dashboard import generate_quality_dashboard
+        eqc_df = pd.read_csv(eqc_path)
+        issues_df = pd.read_csv(issues_path)
+        data = generate_quality_dashboard(eqc_df, issues_df)
+        return render_template("quality_dashboard.html",
+                             projects=data['projects'],
+                             dashboard_date=data['date'],
+                             error=None)
+    except Exception as e:
+        return render_template("quality_dashboard.html",
+                             error=str(e),
+                             projects=[], dashboard_date=date.today().strftime('%d/%m/%Y'))
+
+
+# ========== QUALITY EXPERT ASSISTANT ==========
+
+@app.get("/quality-expert")
+@login_required
+def quality_expert_page():
+    """Render the Quality Expert Assistant page."""
+    return render_template("quality_expert.html")
+
+
+@app.post("/api/quality-expert/ask")
+@login_required
+def api_quality_expert_ask():
+    """API endpoint for Civil Quality AI questions."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    
+    # Client sends 'context' as a dict (ContextState)
+    # If it's the old string format, handle it gracefully
+    context_data = data.get("context", {})
+    if isinstance(context_data, str):
+        context_data = {"extra_info": {"user_notes": context_data}}
+        
+    question = data.get("question", "")
+    
+    if not question:
+        return jsonify({"error": "Question is required"}), 400
+        
+    try:
+        from civil_quality.engine import process_query
+        result = process_query(question, context_data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+
+
+
 

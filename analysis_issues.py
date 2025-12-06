@@ -83,7 +83,15 @@ def _parse_date_safe(s: str) -> date | None:
 
 
 def _filter_quality(df: pd.DataFrame) -> pd.DataFrame:
-    # Exclude Safety in Type L0
+    """Exclude Safety in Type L0 and DEMO projects."""
+    # Exclude DEMO projects
+    demo_cols = ['Project', 'Project Name', 'Location L0']
+    for col in demo_cols:
+        if col in df.columns:
+            mask_demo = df[col].astype(str).str.contains('DEMO', case=False, na=False)
+            df = df[~mask_demo]
+    
+    # Exclude Safety issues
     if "Type L0" in df.columns:
         mask_safety = df["Type L0"].astype(str).str.contains("safety", case=False, na=False)
         df = df[~mask_safety]

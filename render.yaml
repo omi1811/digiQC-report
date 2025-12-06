@@ -17,5 +17,7 @@ services:
         sync: false
       - key: APP_PASSWORD
         sync: false
+      - key: OPENLLM_API_URL
+        sync: false
     healthCheckPath: /login
     autoDeploy: true

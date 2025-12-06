@@ -401,12 +401,9 @@ def generate_for_mode(run_mode: str) -> None:
         site = str(proj).replace(' ', '_')
         process_report(sub, site, lbl)
 
-# If weekly is selected (or defaulted via menu), generate all three modes to ensure the combined workbook has everything
-if mode == "weekly":
-    for m in ("weekly", "monthly", "cumulative"):
-        generate_for_mode(m)
-else:
-    generate_for_mode(mode)
+# NOTE: Changed to generate only Cumulative mode per user request (removed Weekly/Monthly)
+# The mode argument is kept for backwards compatibility but only cumulative is generated
+generate_for_mode("cumulative")
 
 # Always build the combined workbook after generation so the user gets an up-to-date Excel
 try:
@@ -414,3 +411,4 @@ try:
     comb.main()
 except Exception as e:
     print(f"Failed to build combined workbook automatically: {e}. You can run 'python3 combine_reports_to_excel.py' manually.")
+

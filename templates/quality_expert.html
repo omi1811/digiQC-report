@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% block title %}Civil Quality AI - digiQC Reports{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="row">
+        <!-- Sidebar: Context State -->
+        <div class="col-md-4 col-lg-3 mb-4">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-dark text-white">
+                    <i class="bi bi-cpu me-2"></i>Project Context
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted">The AI detects these details from your questions to give specific
+                        answers.</p>
+
+                    <ul class="list-group list-group-flush small" id="contextList">
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Member Type
+                            <span class="badge bg-secondary" id="ctx_member_type">-</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Concrete Grade
+                            <span class="badge bg-secondary" id="ctx_grade_of_concrete">-</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Exposure
+                            <span class="badge bg-secondary" id="ctx_exposure_condition">-</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Cement Type
+                            <span class="badge bg-secondary" id="ctx_cement_type">-</span>
+                        </li>
+                    </ul>
+
+                    <hr>
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold">Extra Notes</label>
+                        <textarea class="form-control form-control-sm" id="extraInfo" rows="4"
+                            placeholder="Any other site details..."></textarea>
+                    </div>
+
+                    <button class="btn btn-sm btn-outline-danger w-100" id="resetContext">
+                        <i class="bi bi-arrow-counterclockwise me-1"></i>Reset Context
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Chat Area -->
+        <div class="col-md-8 col-lg-9">
+            <div class="card shadow-sm h-100 d-flex flex-column">
+                <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                    <div>
+                        <i class="bi bi-robot me-2"></i>Civil Quality AI <span
+                            class="badge bg-light text-primary ms-2">Knowledge Engine</span>
+                    </div>
+                    <button class="btn btn-sm btn-light text-primary" id="clearChat" title="Clear Chat">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </div>
+
+                <!-- Chat History -->
+                <div class="card-body bg-light overflow-auto" id="chatHistory" style="height: 60vh; max-height: 60vh;">
+                    <div class="text-center text-muted mt-5">
+                        <i class="bi bi-chat-square-text display-4"></i>
+                        <p class="mt-2">Hello! I'm your Civil Quality Assistant.<br>I provide IS code-based guidance for site engineers.</p>
+                        <div class="small text-start mx-auto" style="max-width: 400px;">
+                            <p class="fw-bold mb-2">Try asking:</p>
+                            <ul class="list-unstyled">
+                                <li>• What is the minimum cover for a slab in severe exposure?</li>
+                                <li>• Is M25 suitable for footing in moderate conditions?</li>
+                                <li>• Give me pre-concreting checklist</li>
+                                <li>• How to prevent honeycomb in concrete?</li>
+                                <li>• What is the curing period for PPC?</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="card-footer bg-white">
+                    <div class="input-group">
+                        <textarea class="form-control" id="userQuestion" rows="2"
+                            placeholder="Ask a question (e.g., 'Is M25 suitable for a footing in severe conditions?')"></textarea>
+                        <button class="btn btn-primary" id="sendBtn">
+                            <i class="bi bi-send-fill"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Markdown Parser -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const questionInput = document.getElementById('userQuestion');
+        const sendBtn = document.getElementById('sendBtn');
+        const chatHistory = document.getElementById('chatHistory');
+        const clearBtn = document.getElementById('clearChat');
+        const resetBtn = document.getElementById('resetContext');
+        const extraInfoInput = document.getElementById('extraInfo');
+
+        // State
+        let contextState = {};
+
+        // UI Updaters
+        function updateContextUI() {
+            document.getElementById('ctx_member_type').textContent = contextState.member_type || '-';
+            document.getElementById('ctx_grade_of_concrete').textContent = contextState.grade_of_concrete || '-';
+            document.getElementById('ctx_exposure_condition').textContent = contextState.exposure_condition || '-';
+            document.getElementById('ctx_cement_type').textContent = contextState.cement_type || '-';
+
+            // Color coding
+            ['member_type', 'grade_of_concrete', 'exposure_condition', 'cement_type'].forEach(key => {
+                const el = document.getElementById('ctx_' + key);
+                if (contextState[key]) {
+                    el.classList.remove('bg-secondary');
+                    el.classList.add('bg-success');
+                } else {
+                    el.classList.add('bg-secondary');
+                    el.classList.remove('bg-success');
+                }
+            });
+        }
+
+        resetBtn.addEventListener('click', () => {
+            contextState = {};
+            extraInfoInput.value = '';
+            updateContextUI();
+            appendMessage('system', 'Context reset.');
+        });
+
+        clearBtn.addEventListener('click', () => {
+            chatHistory.innerHTML = '';
+        });
+
+        // Send Message
+        async function sendMessage() {
+            const question = questionInput.value.trim();
+            if (!question) return;
+
+            // Update extra info in context
+            if (!contextState.extra_info) contextState.extra_info = {};
+            contextState.extra_info.user_notes = extraInfoInput.value;
+
+            // Add User Message
+            appendMessage('user', question);
+            questionInput.value = '';
+
+            // Add Loading
+            const loadingId = appendMessage('ai', '<div class="spinner-border spinner-border-sm text-primary" role="status"></div> Analyzing...');
+
+            try {
+                const response = await fetch('/api/quality-expert/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        question: question,
+                        context: contextState
+                    })
+                });
+
+                const data = await response.json();
+                document.getElementById(loadingId).remove();
+
+                if (data.error) {
+                    appendMessage('system', `Error: ${data.error}`);
+                } else {
+                    // Update State
+                    if (data.context_state) {
+                        contextState = data.context_state;
+                        updateContextUI();
+                    }
+
+                    // Render Reply
+                    let replyHtml = marked.parse(data.reply);
+
+                    // Add Sources if any
+                    if (data.sources && data.sources.length > 0) {
+                        replyHtml += '<div class="mt-3 pt-2 border-top"><small class="text-muted fw-bold">Sources:</small><ul class="list-unstyled small mb-0">';
+                        data.sources.forEach(src => {
+                            replyHtml += `<li><a href="${src.url}" target="_blank" class="text-decoration-none"><i class="bi bi-link-45deg"></i> ${src.title || src.url}</a></li>`;
+                        });
+                        replyHtml += '</ul></div>';
+                    }
+
+                    // Follow-up needed styling
+                    if (data.follow_up_needed) {
+                        replyHtml = `<div class="alert alert-warning mb-0"><i class="bi bi-exclamation-circle me-2"></i>${replyHtml}</div>`;
+                    }
+
+                    appendMessage('ai', replyHtml);
+                }
+
+            } catch (e) {
+                document.getElementById(loadingId).remove();
+                appendMessage('system', `Network Error: ${e.message}`);
+            }
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        questionInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        function appendMessage(sender, content) {
+            const msgId = 'msg-' + Date.now();
+            const div = document.createElement('div');
+            div.id = msgId;
+            div.className = `d-flex mb-3 ${sender === 'user' ? 'justify-content-end' : 'justify-content-start'}`;
+
+            let avatar = '';
+            let bgClass = '';
+
+            if (sender === 'user') {
+                avatar = '<div class="avatar bg-secondary text-white rounded-circle d-flex align-items-center justify-content-center ms-2" style="width: 35px; height: 35px;"><i class="bi bi-person"></i></div>';
+                bgClass = 'bg-primary text-white';
+            } else if (sender === 'ai') {
+                avatar = '<div class="avatar bg-info text-white rounded-circle d-flex align-items-center justify-content-center me-2" style="width: 35px; height: 35px;"><i class="bi bi-robot"></i></div>';
+                bgClass = 'bg-white border shadow-sm';
+            } else {
+                bgClass = 'bg-danger text-white';
+            }
+
+            const bubble = `
+            <div class="p-3 rounded-3 ${bgClass}" style="max-width: 85%;">
+                ${content}
+            </div>
+        `;
+
+            div.innerHTML = sender === 'user' ? bubble + avatar : avatar + bubble;
+            chatHistory.appendChild(div);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+            return msgId;
+        }
+    });
+</script>
+{% endblock %}
