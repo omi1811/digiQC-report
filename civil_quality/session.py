@@ -14,12 +14,12 @@ def analyze_slots(question: str, current_context: ContextState) -> Tuple[Context
     Analyze user question to fill slots in the context.
     Returns updated context and list of missing fields.
     
-    Note: We've made this more lenient - only asks for critical missing info
-    when the question specifically requires it. General questions work without context.
+    IMPORTANT: We are now very lenient - we almost NEVER block the user.
+    Only ask for additional info if absolutely required for a specific check.
     """
     text = question.lower()
     
-    # 1. Update Context from Text
+    # 1. Update Context from Text (passively collect info)
     if not current_context.member_type:
         for val in REQUIRED_SLOTS["member_type"]:
             if val in text:
@@ -45,26 +45,9 @@ def analyze_slots(question: str, current_context: ContextState) -> Tuple[Context
                 current_context.cement_type = val.upper()
                 break
 
-    # 2. Identify Missing Fields - ONLY for questions that specifically need them
-    # Be lenient - most questions can be answered with defaults or general guidance
-    
+    # 2. NEVER block the user - return empty missing list
+    # The knowledge engine can handle any query with defaults
+    # This ensures the user always gets an answer
     missing = []
-    
-    # Only ask for specifics if user is asking about suitability/verification
-    is_suitability_check = any([
-        "okay" in text, "suitable" in text, "correct" in text,
-        "right" in text, "acceptable" in text, "proper" in text,
-        "is m" in text, "can i use" in text, "should i" in text
-    ])
-    
-    # For suitability checks, we need grade and exposure at minimum
-    if is_suitability_check:
-        if not current_context.grade_of_concrete and "grade" not in text:
-            missing.append("grade_of_concrete")
-        if not current_context.exposure_condition:
-            missing.append("exposure_condition")
-    
-    # Don't require all fields - be helpful with what we have
-    # Cement type is almost never critical to ask about
     
     return current_context, missing
