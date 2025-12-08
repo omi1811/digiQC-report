@@ -93,6 +93,94 @@
       {% endif %}
     </div>
 
+    {# Aluform Table - Floor Level Checklists #}
+    <div class="mb-4">
+      <h5 class="text-warning"><i class="bi bi-gear me-2"></i>Aluform Checklists (Floor Level)</h5>
+      <p class="text-muted small">These checklists apply to structural formwork stages.</p>
+      {% if aluform_items %}
+      <table class="table table-sm table-bordered">
+        <thead class="table-light">
+          <tr>
+            <th>Checklist</th>
+            <th>Stage</th>
+            <th>Status</th>
+            <th>Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for it in aluform_items %}
+          <tr>
+            <td>
+              {% if it.url %}
+              <a href="{{ it.url }}" target="_blank" rel="noopener">{{ it.checklist }}</a>
+              {% else %}
+              {{ it.checklist }}
+              {% endif %}
+            </td>
+            <td><span class="badge bg-warning text-dark">{{ it.stage }}</span></td>
+            <td>
+              {% if it.status and it.status|upper == 'PASSED' %}
+              <span class="badge bg-success">✓ Passed</span>
+              {% elif it.status %}
+              <span class="badge bg-info">{{ it.status }}</span>
+              {% else %}
+              <span class="text-muted">-</span>
+              {% endif %}
+            </td>
+            <td><span class="text-muted small">{{ it.date }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="alert alert-secondary">No Aluform checklists found for this floor.</div>
+      {% endif %}
+    </div>
+
+    {# Handover Table - Multiple Level Checklists #}
+    <div class="mb-4">
+      <h5 class="text-info"><i class="bi bi-check-circle me-2"></i>Handover Checklists</h5>
+      <p class="text-muted small">These checklists cover internal handover between stages.</p>
+      {% if handover_items %}
+      <table class="table table-sm table-bordered">
+        <thead class="table-light">
+          <tr>
+            <th>Checklist</th>
+            <th>Stage</th>
+            <th>Status</th>
+            <th>Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for it in handover_items %}
+          <tr>
+            <td>
+              {% if it.url %}
+              <a href="{{ it.url }}" target="_blank" rel="noopener">{{ it.checklist }}</a>
+              {% else %}
+              {{ it.checklist }}
+              {% endif %}
+            </td>
+            <td><span class="badge bg-info">{{ it.stage }}</span></td>
+            <td>
+              {% if it.status and it.status|upper == 'PASSED' %}
+              <span class="badge bg-success">✓ Passed</span>
+              {% elif it.status %}
+              <span class="badge bg-info">{{ it.status }}</span>
+              {% else %}
+              <span class="text-muted">-</span>
+              {% endif %}
+            </td>
+            <td><span class="text-muted small">{{ it.date }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="alert alert-secondary">No Handover checklists found for this floor.</div>
+      {% endif %}
+    </div>
+
     {# Finishing Table - Flat Level Checklists #}
     <div class="mb-4">
       <h5 class="text-success"><i class="bi bi-house-door me-2"></i>Finishing Checklists (Flat Level)</h5>

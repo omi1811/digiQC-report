@@ -153,13 +153,14 @@ class AIAnalyzer:
     
     def analyze_issues_patterns(self, df: pd.DataFrame) -> dict:
         """
-        Analyze Issues CSV to find most repeating issues.
+        Analyze Issues CSV to find top 7-10 teams with most issues,
+        then show their most repetitive instructions.
         
         Args:
-            df: DataFrame with Issues data (columns: Type L0, Description, Current Status, Location)
+            df: DataFrame with Issues data (columns: Description, Assigned Team)
         
         Returns:
-            dict with issue patterns and top repeating issues
+            dict with top teams and their repetitive instructions
         """
         # Filter out DEMO projects
         df = self._filter_demo_projects(df)
@@ -169,76 +170,99 @@ class AIAnalyzer:
             safety_mask = df['Type L0'].astype(str).str.contains('safety', case=False, na=False)
             df = df[~safety_mask]
         
+        # Ensure required columns exist
+        if 'Assigned Team' not in df.columns:
+            return {'error': 'Missing required column: Assigned Team'}
+        if 'Description' not in df.columns:
+            return {'error': 'Missing required column: Description'}
+        
         results = {
-            'summary': {},
-            'by_category': {},
-            'top_issues': [],
-            'issue_clusters': []
+            'teams': [],
+            'note': f'Analyzed {len(df)} total instructions'
         }
         
-        # Ensure required columns exist
-        if 'Type L0' not in df.columns:
-            return {'error': 'Missing required column: Type L0'}
+        # Get top 7-10 teams by issue count
+        team_counts = df['Assigned Team'].value_counts()
+        # Filter out NaN teams and take top 10 (user will see 7-10)
+        team_counts = team_counts[team_counts.index.notna()].head(10)
         
-        # Overall summary
-        total = len(df)
-        status_col = 'Current Status' if 'Current Status' in df.columns else None
-        
-        if status_col:
-            raised = len(df[df[status_col] == 'RAISED'])
-            closed = len(df[df[status_col] == 'CLOSED'])
-            results['summary'] = {
-                'total_issues': total,
-                'raised': raised,
-                'closed': closed,
-                'closure_rate': round(closed / total * 100, 1) if total > 0 else 0
-            }
-        else:
-            results['summary'] = {'total_issues': total}
-        
-        # Analysis by Category (Type L0)
-        category_counts = df['Type L0'].value_counts().head(10)
-        for category, count in category_counts.items():
-            results['by_category'][category] = {
-                'count': int(count),
-                'percentage': round(count / total * 100, 1)
-            }
-        
-        # Find most repeating issues using Description
-        if 'Description' in df.columns:
-            description_counts = df['Description'].value_counts().head(20)
+        for team_name in team_counts.index:
+            team_df = df[df['Assigned Team'] == team_name]
             
+            # Get top 5 repetitive instructions for this team
+            description_counts = team_df['Description'].value_counts().head(5)
+            
+            team_issues = []
             for desc, count in description_counts.items():
-                if pd.isna(desc) or desc.strip() == '':
+                if pd.isna(desc) or str(desc).strip() == '':
                     continue
-                    
-                # Get locations for this issue
-                issue_df = df[df['Description'] == desc]
-                locations = issue_df['Location L0'].unique()[:3] if 'Location L0' in df.columns else []
                 
-                results['top_issues'].append({
-                    'description': desc[:100],  # Truncate long descriptions
-                    'count': int(count),
-                    'locations': list(locations)
+                desc_str = str(desc).strip()
+                team_issues.append({
+                    'description': desc_str[:100],  # Truncate long descriptions
+                    'count': int(count)
                 })
             
-            # Semantic clustering of similar issues (if AI available)
-            if self.use_ai and len(df) > 0:
-                results['issue_clusters'] = self._cluster_similar_issues(df['Description'].dropna().unique())
+            # Only add team if it has issues
+            if team_issues:
+                results['teams'].append({
+                    'team': str(team_name),
+                    'total_issues': int(len(team_df)),
+                    'top_instructions': team_issues
+                })
         
-        return results
+        # Sanitize results recursively to ensure JSON-serializable values
+        def _sanitize(v):
+            # Handle pandas/numpy scalar types
+            if isinstance(v, (np.int64, np.int32, np.integer)):
+                return int(v)
+            if isinstance(v, (np.float64, np.float32, np.floating)):
+                if np.isnan(v):
+                    return None
+                return float(v)
+            # If it's a sequence/array, sanitize each item
+            if isinstance(v, (list, tuple, np.ndarray)):
+                return [_sanitize(x) for x in list(v)]
+            # If dict, sanitize recursively
+            if isinstance(v, dict):
+                return {str(k): _sanitize(val) for k, val in v.items()}
+            # Scalar NaN/NA
+            try:
+                if pd.isna(v):
+                    return None
+            except Exception:
+                pass
+            
+            return v
+
+        return _sanitize(results)
     
-    def _cluster_similar_issues(self, descriptions: list, threshold: float = 0.85) -> list:
-        """Cluster semantically similar issue descriptions using embeddings."""
+    def _cluster_similar_issues(self, descriptions: list, threshold: float = 0.85, max_items: int = 50) -> list:
+        """Cluster semantically similar issue descriptions using embeddings.
+        
+        Args:
+            descriptions: List of description strings to cluster
+            threshold: Similarity threshold for grouping (0-1)
+            max_items: Maximum items to process (for performance)
+        
+        Returns:
+            List of clusters, sorted by count descending
+        """
         if not self.use_ai or len(descriptions) < 2:
             return []
         
         try:
-            # Limit to first 100 unique descriptions for performance
-            descriptions = list(descriptions)[:100]
+            # Limit descriptions for performance
+            descriptions = list(descriptions)[:max_items]
+            if len(descriptions) < 2:
+                return []
             
-            # Get embeddings
-            embeddings = self.model.encode(descriptions)
+            # Get embeddings with batch processing for better performance
+            try:
+                embeddings = self.model.encode(descriptions, show_progress_bar=False, batch_size=32)
+            except TypeError:
+                # Fallback for older versions
+                embeddings = self.model.encode(descriptions)
             
             # Calculate similarity matrix
             similarity_matrix = cosine_similarity(embeddings)
@@ -255,9 +279,9 @@ class AIAnalyzer:
                 similar_indices = np.where(similarity_matrix[i] > threshold)[0]
                 if len(similar_indices) > 1:
                     cluster = {
-                        'main': desc[:80],
-                        'similar': [descriptions[j][:80] for j in similar_indices if j != i][:5],
-                        'count': len(similar_indices)
+                        'main': str(desc)[:80],
+                        'similar': [str(descriptions[j])[:80] for j in similar_indices if j != i][:5],
+                        'count': int(len(similar_indices))
                     }
                     clusters.append(cluster)
                     used.update(similar_indices)
@@ -385,7 +409,8 @@ def analyze_eqc_file(filepath: str, use_ai: bool = True) -> dict:
     try:
         df = pd.read_csv(filepath)
         analyzer = AIAnalyzer(use_ai=use_ai)
-        return analyzer.analyze_eqc_completion(df)
+        result = analyzer.analyze_eqc_completion(df)
+        return _sanitize_for_json(result)
     except Exception as e:
         return {'error': str(e)}
 
@@ -395,7 +420,8 @@ def analyze_issues_file(filepath: str, use_ai: bool = True) -> dict:
     try:
         df = pd.read_csv(filepath)
         analyzer = AIAnalyzer(use_ai=use_ai)
-        return analyzer.analyze_issues_patterns(df)
+        result = analyzer.analyze_issues_patterns(df)
+        return _sanitize_for_json(result)
     except Exception as e:
         return {'error': str(e)}
 
@@ -405,7 +431,8 @@ def standardize_checklists_file(filepath: str, use_ai: bool = True) -> dict:
     try:
         df = pd.read_csv(filepath)
         analyzer = AIAnalyzer(use_ai=use_ai)
-        return analyzer.standardize_checklist_names(df)
+        result = analyzer.standardize_checklist_names(df)
+        return _sanitize_for_json(result)
     except Exception as e:
         return {'error': str(e)}
 
@@ -433,3 +460,31 @@ if __name__ == '__main__':
         result = standardize_checklists_file(args.file, use_ai=use_ai)
     
     print(json.dumps(result, indent=2))
+
+
+def _sanitize_for_json(v):
+    """Recursively convert numpy/pandas scalars and NaNs to JSON-serializable Python types.
+
+    Returns a new value with safe types (int, float, str, None, list, dict).
+    """
+    # Handle dicts
+    if isinstance(v, dict):
+        return {str(k): _sanitize_for_json(val) for k, val in v.items()}
+    # Sequences/arrays
+    if isinstance(v, (list, tuple, np.ndarray)):
+        return [_sanitize_for_json(x) for x in list(v)]
+    # numpy int
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    # numpy floats
+    if isinstance(v, (np.floating,)):
+        if np.isnan(v):
+            return None
+        return float(v)
+    # pandas NA/NaN
+    try:
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+    return v

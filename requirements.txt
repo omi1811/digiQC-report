@@ -5,3 +5,5 @@ openpyxl
 gunicorn
 duckduckgo-search
 requests
+sentence-transformers
+scikit-learn

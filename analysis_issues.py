@@ -83,18 +83,24 @@ def _parse_date_safe(s: str) -> date | None:
 
 
 def _filter_quality(df: pd.DataFrame) -> pd.DataFrame:
-    """Exclude Safety in Type L0 and DEMO projects."""
-    # Exclude DEMO projects
-    demo_cols = ['Project', 'Project Name', 'Location L0']
-    for col in demo_cols:
-        if col in df.columns:
-            mask_demo = df[col].astype(str).str.contains('DEMO', case=False, na=False)
-            df = df[~mask_demo]
+    """Exclude Safety and DEMO from quality issues.
     
-    # Exclude Safety issues
+    Filter order (matches manual Excel filtering):
+    1. Remove all rows where Type L0 contains 'safety' (519 rows)
+    2. Remove DEMO from 'Project Name' column (101 rows after safety removal)
+    
+    Result: 2819 total → 2300 (after safety) → 2199 (after DEMO) = Quality issues only
+    """
+    # Step 1: Exclude all Safety-related issues first
     if "Type L0" in df.columns:
-        mask_safety = df["Type L0"].astype(str).str.contains("safety", case=False, na=False)
+        mask_safety = df["Type L0"].astype(str).str.contains('safety', case=False, na=False)
         df = df[~mask_safety]
+    
+    # Step 2: Then exclude DEMO projects from Project Name
+    if "Project Name" in df.columns:
+        mask_demo = df["Project Name"].astype(str).str.contains('DEMO', case=False, na=False)
+        df = df[~mask_demo]
+    
     return df
 
 

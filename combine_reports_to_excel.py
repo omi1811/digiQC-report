@@ -86,7 +86,7 @@ def main():
         for m in modes:
             if (p, m) in paths:
                 sheet_order.append((p, m))
-    out_xlsx = 'EQC_Cumulative_AllProjects.xlsx'
+    out_xlsx = 'EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx'
 
     # paths already built above
 

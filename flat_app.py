@@ -25,7 +25,26 @@ RCC_CATEGORIES: List[Tuple[str, List[str]]] = [
         "RCC / Structural",
         [
             r"\brcc\b|reinforc|shuttering|\bstruct|slab|column|beam|footing",
-            r"aluform|internal\s*handover|handover",
+        ],
+    ),
+]
+
+# Aluform checklists - structural (floor-level)
+ALUFORM_CATEGORIES: List[Tuple[str, List[str]]] = [
+    (
+        "Aluform",
+        [
+            r"aluform",
+        ],
+    ),
+]
+
+# Handover checklists - can be at multiple levels
+HANDOVER_CATEGORIES: List[Tuple[str, List[str]]] = [
+    (
+        "Internal Handover",
+        [
+            r"internal\s*handover|handover",
         ],
     ),
 ]
@@ -109,6 +128,34 @@ def is_rcc_checklist(name: str) -> bool:
     return False
 
 
+def is_aluform_checklist(name: str) -> bool:
+    """Check if a checklist is Aluform (floor-level)."""
+    import re as _re
+    s = (name or "").lower()
+    for _, patterns in ALUFORM_CATEGORIES:
+        for pat in patterns:
+            try:
+                if _re.search(pat, s, _re.I):
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def is_handover_checklist(name: str) -> bool:
+    """Check if a checklist is Handover."""
+    import re as _re
+    s = (name or "").lower()
+    for _, patterns in HANDOVER_CATEGORIES:
+        for pat in patterns:
+            try:
+                if _re.search(pat, s, _re.I):
+                    return True
+            except Exception:
+                continue
+    return False
+
+
 def base_name(n: str) -> str:
     """Standardize checklist names by removing contractor suffixes (matches Weekly_report.py logic)."""
     import re
@@ -168,15 +215,34 @@ def map_checklist_to_category(name: str) -> Tuple[int, str]:
                     return idx, label
             except Exception:
                 continue
+    # Check Aluform
+    aluform_offset = len(RCC_CATEGORIES)
+    for idx, (label, patterns) in enumerate(ALUFORM_CATEGORIES):
+        for pat in patterns:
+            try:
+                if _re.search(pat, s, _re.I):
+                    return aluform_offset + idx, label
+            except Exception:
+                continue
+    # Check Handover
+    handover_offset = len(RCC_CATEGORIES) + len(ALUFORM_CATEGORIES)
+    for idx, (label, patterns) in enumerate(HANDOVER_CATEGORIES):
+        for pat in patterns:
+            try:
+                if _re.search(pat, s, _re.I):
+                    return handover_offset + idx, label
+            except Exception:
+                continue
     # Check Finishing
+    finishing_offset = len(RCC_CATEGORIES) + len(ALUFORM_CATEGORIES) + len(HANDOVER_CATEGORIES)
     for idx, (label, patterns) in enumerate(FINISHING_CATEGORIES):
         for pat in patterns:
             try:
                 if _re.search(pat, s, _re.I):
-                    return len(RCC_CATEGORIES) + idx, label
+                    return finishing_offset + idx, label
             except Exception:
                 continue
-    return len(RCC_CATEGORIES) + len(FINISHING_CATEGORIES), UNCATEGORIZED_LABEL
+    return finishing_offset + len(FINISHING_CATEGORIES), UNCATEGORIZED_LABEL
 
 
 def robust_read_eqc(path: str) -> pd.DataFrame:
@@ -531,14 +597,17 @@ def flat_report_index():
         reps_flat = _latest_per_checklist(scope_flat)
         reps_floor = _latest_per_checklist(scope_floor)
 
-    # Populate items: RCC checklists from floor-level reps; Finishing from flat-level reps
+    # Populate items: RCC, Aluform, Handover, and Finishing checklists go to separate tables
     rcc_items: List[Dict] = []
+    aluform_items: List[Dict] = []
+    handover_items: List[Dict] = []
     finishing_items_by_cat: Dict[Tuple[int, str], List[Dict]] = {}
     
-    for src, is_floor_level in ((reps_floor, True), (reps_flat, False)):
-        if src is None or src.empty:
-            continue
-        for _, row in src.iterrows():
+    # Combine all reps from both floor and flat level
+    all_reps = pd.concat([reps_floor, reps_flat], ignore_index=True) if (not reps_floor.empty and not reps_flat.empty) else (reps_floor if not reps_floor.empty else reps_flat)
+    
+    if all_reps is not None and not all_reps.empty:
+        for _, row in all_reps.iterrows():
             cl = row["__Checklist"]
             # Apply base_name for standardization
             cl_display = base_name(cl)
@@ -555,23 +624,33 @@ def flat_report_index():
                 "date": row.get("__Date"),
             }
             
+            # Determine category based on checklist type, not source
             if is_rcc_checklist(cl):
-                # RCC checklists go to floor-level RCC table
-                if is_floor_level:
-                    rcc_items.append(item)
+                # RCC checklists (structural/floor-level) go to RCC table
+                rcc_items.append(item)
+            elif is_aluform_checklist(cl):
+                # Aluform checklists (floor-level) go to Aluform table
+                aluform_items.append(item)
+            elif is_handover_checklist(cl):
+                # Handover checklists go to Handover table
+                handover_items.append(item)
             else:
-                # Finishing checklists go to flat-level Finishing table
-                if not is_floor_level:
-                    idx, cat = map_checklist_to_category(cl)
-                    if (idx, cat) not in finishing_items_by_cat:
-                        finishing_items_by_cat[(idx, cat)] = []
-                    finishing_items_by_cat[(idx, cat)].append(item)
+                # Finishing checklists (flat-level) go to Finishing categories
+                idx, cat = map_checklist_to_category(cl)
+                if (idx, cat) not in finishing_items_by_cat:
+                    finishing_items_by_cat[(idx, cat)] = []
+                finishing_items_by_cat[(idx, cat)].append(item)
     
-    # Build ordered keys for Finishing categories
+    # Build ordered keys for all categories
+    ordered_rcc_keys: List[Tuple[int, str]] = [(0, label) for label, _ in RCC_CATEGORIES]
+    ordered_aluform_keys: List[Tuple[int, str]] = [(len(RCC_CATEGORIES) + i, label) for i, (label, _) in enumerate(ALUFORM_CATEGORIES)]
+    ordered_handover_keys: List[Tuple[int, str]] = [(len(RCC_CATEGORIES) + len(ALUFORM_CATEGORIES) + i, label) for i, (label, _) in enumerate(HANDOVER_CATEGORIES)]
+    
+    finishing_offset = len(RCC_CATEGORIES) + len(ALUFORM_CATEGORIES) + len(HANDOVER_CATEGORIES)
     ordered_finishing_keys: List[Tuple[int, str]] = []
     for i, (label, _) in enumerate(FINISHING_CATEGORIES):
-        ordered_finishing_keys.append((len(RCC_CATEGORIES) + i, label))
-    ordered_finishing_keys.append((len(RCC_CATEGORIES) + len(FINISHING_CATEGORIES), UNCATEGORIZED_LABEL))
+        ordered_finishing_keys.append((finishing_offset + i, label))
+    ordered_finishing_keys.append((finishing_offset + len(FINISHING_CATEGORIES), UNCATEGORIZED_LABEL))
 
     return render_template(
         "flat_report.html",
@@ -585,6 +664,8 @@ def flat_report_index():
         flats=flats_all,
         selected_flat=flat,
         rcc_items=rcc_items,
+        aluform_items=aluform_items,
+        handover_items=handover_items,
         finishing_items_by_cat=finishing_items_by_cat,
         ordered_finishing_keys=ordered_finishing_keys,
         show_only_export=(floor == "ALL"),
@@ -593,7 +674,7 @@ def flat_report_index():
 
 @app.get("/flat-report/export")
 def flat_report_export():
-    # Build an Excel status grid for selected Project/Building/Floor
+    # Build an Excel status grid with separate sheets for RCC, Aluform, Handover, and Finishing
     path = request.args.get("path") or "Combined_EQC.csv"
     if not os.path.exists(path):
         return f"EQC file not found: {path}", 404
@@ -610,7 +691,6 @@ def flat_report_export():
         dff = dfl[dfl["__Floor"].astype(str).fillna("").replace("", "UNKNOWN").eq(floor or "")]
 
     # Determine flats on this floor
-    # Natural-sort flats like in UI
     def _flat_key(v: str):
         import re as _re
         s = str(v or "").strip()
@@ -624,114 +704,138 @@ def flat_report_export():
             return (1, int(m2.group(1)), "")
         return (9, 0, s.lower())
     flats = sorted(set(dff["__Flat"].astype(str).fillna("").replace("", "UNKNOWN")), key=_flat_key)
-    # Build latest rows per (flat, checklist)
-    tmp = dff.copy()
-    tmp["__ChecklistKey"] = tmp["__Checklist"].astype(str).str.strip().str.lower()
-    tmp["__FlatKey"] = tmp["__Flat"].astype(str).fillna("").replace("", "UNKNOWN")
-    tmp["__DateOrd"] = pd.to_datetime(tmp["__Date"]).fillna(pd.Timestamp.min)
-    tmp = tmp.sort_values("__DateOrd").groupby(["__FlatKey", "__ChecklistKey"], as_index=False).tail(1)
+    
+    # Helper function to build a sheet with status matrix
+    def build_status_sheet(tmp_data: pd.DataFrame) -> pd.DataFrame:
+        """Build status matrix for a set of checklists (RCC, Aluform, Handover, or Finishing)."""
+        if tmp_data.empty:
+            return pd.DataFrame()
+        
+        tmp = tmp_data.copy()
+        tmp["__ChecklistKey"] = tmp["__Checklist"].astype(str).str.strip().str.lower()
+        tmp["__FlatKey"] = tmp["__Flat"].astype(str).fillna("").replace("", "UNKNOWN")
+        tmp["__DateOrd"] = pd.to_datetime(tmp["__Date"]).fillna(pd.Timestamp.min)
+        tmp = tmp.sort_values("__DateOrd").groupby(["__FlatKey", "__ChecklistKey"], as_index=False).tail(1)
 
-    # Determine checklist columns as union across this floor (use readable names)
-    checklist_cols = list(dict.fromkeys(tmp["__Checklist"].astype(str).tolist()))
+        # Determine checklist columns as union across this floor (use readable names)
+        checklist_cols = list(dict.fromkeys(tmp["__Checklist"].astype(str).tolist()))
 
-    # Build status matrix
-    def status_symbol(status: str) -> str:
-        up = (status or "").strip().upper()
-        if up == "PASSED":
-            return "✓"
-        if "PROGRESS" in up:
-            return "–"
-        return "–" if up else "–"  # unknown treated as dash
+        # Build status matrix
+        def status_symbol(status: str) -> str:
+            up = (status or "").strip().upper()
+            if up == "PASSED":
+                return "✓"
+            if "PROGRESS" in up:
+                return "–"
+            return "–" if up else "–"
 
-    grid = []
-    for flt in flats:
-        row = {"Flat": flt}
-        sub = tmp[tmp["__FlatKey"].eq(flt)]
-        present = set(sub["__Checklist"].astype(str))
-        any_present = bool(present)
-        all_complete = True
-        for col in checklist_cols:
-            rec = sub[sub["__Checklist"].astype(str).eq(col)]
-            if rec.empty:
-                row[col] = "✗"
-                all_complete = False
-            else:
-                sym = status_symbol(str(rec.iloc[0].get("Status", "")))
-                row[col] = sym
-                if sym != "✓":
+        grid = []
+        for flt in flats:
+            row = {"Flat": flt}
+            sub = tmp[tmp["__FlatKey"].eq(flt)]
+            present = set(sub["__Checklist"].astype(str))
+            any_present = bool(present)
+            all_complete = True
+            for col in checklist_cols:
+                rec = sub[sub["__Checklist"].astype(str).eq(col)]
+                if rec.empty:
+                    row[col] = "✗"
                     all_complete = False
-        # Overall status per flat
-        row["Overall"] = "✓" if all_complete and any_present else ("–" if any_present else "✗")
-        grid.append(row)
+                else:
+                    sym = status_symbol(str(rec.iloc[0].get("Status", "")))
+                    row[col] = sym
+                    if sym != "✓":
+                        all_complete = False
+            # Overall status per flat
+            row["Overall"] = "✓" if all_complete and any_present else ("–" if any_present else "✗")
+            grid.append(row)
 
-    out_df = pd.DataFrame(grid, columns=["Flat", "Overall"] + checklist_cols)
-    # Write Excel with basic coloring
+        return pd.DataFrame(grid, columns=["Flat", "Overall"] + checklist_cols) if grid else pd.DataFrame()
+    
+    # Separate data by checklist type
+    rcc_data = dff[dff["__Checklist"].apply(is_rcc_checklist)]
+    aluform_data = dff[dff["__Checklist"].apply(is_aluform_checklist)]
+    handover_data = dff[dff["__Checklist"].apply(is_handover_checklist)]
+    finishing_data = dff[~dff["__Checklist"].apply(lambda x: is_rcc_checklist(x) or is_aluform_checklist(x) or is_handover_checklist(x))]
+    
+    # Build status DataFrames for each category
+    rcc_df = build_status_sheet(rcc_data)
+    aluform_df = build_status_sheet(aluform_data)
+    handover_df = build_status_sheet(handover_data)
+    finishing_df = build_status_sheet(finishing_data)
+
+    # Write Excel with separate sheets
     from openpyxl import Workbook
     from openpyxl.utils.dataframe import dataframe_to_rows
     from openpyxl.styles import PatternFill
+    
     wb = Workbook()
-    ws = wb.active
-    ws.title = f"{(building or 'Building')} - {(floor or 'Floor')}"
-    # Add building name header for clarity
-    ws.cell(row=1, column=1, value="Building:")
-    ws.cell(row=1, column=2, value=building)
+    wb.remove(wb.active)  # Remove the default sheet
     
-    # Add legend for symbols
-    ws.cell(row=1, column=4, value="Legend:")
-    ws.cell(row=1, column=5, value="✓ = Passed")
-    ws.cell(row=1, column=6, value="– = In Progress")
-    ws.cell(row=1, column=7, value="✗ = Not Done")
+    # Helper to add a sheet with formatting
+    def add_sheet_with_data(workbook, sheet_name: str, data_df: pd.DataFrame) -> None:
+        """Add a sheet with status data and formatting."""
+        if data_df.empty:
+            return  # Skip empty sheets
+        
+        ws = workbook.create_sheet(title=sheet_name)
+        # Add building name header for clarity
+        ws.cell(row=1, column=1, value="Building:")
+        ws.cell(row=1, column=2, value=building)
+        ws.cell(row=1, column=4, value="Floor:")
+        ws.cell(row=1, column=5, value=(floor or 'ALL'))
+        
+        # Add legend for symbols
+        ws.cell(row=1, column=7, value="Legend:")
+        ws.cell(row=1, column=8, value="✓ = Passed")
+        ws.cell(row=1, column=9, value="– = In Progress")
+        ws.cell(row=1, column=10, value="✗ = Not Done")
+        
+        # Leave row 2 blank, start data at row 3
+        ws.append([])
+        start_row = 3
+        for r in dataframe_to_rows(data_df, index=False, header=True):
+            ws.append(r)
+        
+        green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        yellow = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        red = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
+        
+        # Apply coloring only over data rows (excluding header at start_row)
+        for row in ws.iter_rows(min_row=start_row+1, min_col=2, max_row=ws.max_row, max_col=ws.max_column):
+            for cell in row:
+                val = str(cell.value or "")
+                if val == "✓":
+                    cell.fill = green
+                elif val == "–":
+                    cell.fill = yellow
+                elif val == "✗":
+                    cell.fill = red
+        
+        # Apply borders and wrap text
+        thin = Side(border_style="thin", color="000000")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        align = Alignment(wrap_text=True, vertical="center")
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                try:
+                    cell.border = border
+                    cell.alignment = align
+                except Exception:
+                    pass
     
-    # Leave row 2 blank, start data at row 3
-    ws.append([])
-    start_row = 3
-    for r in dataframe_to_rows(out_df, index=False, header=True):
-        ws.append(r)
-    green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    yellow = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-    red = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
-    # Apply coloring only over data rows (excluding header at start_row)
-    for row in ws.iter_rows(min_row=start_row+1, min_col=2, max_row=ws.max_row, max_col=ws.max_column):
-        for cell in row:
-            val = str(cell.value or "")
-            if val == "✓":
-                cell.fill = green
-            elif val == "–":
-                cell.fill = yellow
-            elif val == "✗":
-                cell.fill = red
+    # Add sheets in order
+    add_sheet_with_data(wb, "RCC / Structural", rcc_df)
+    add_sheet_with_data(wb, "Aluform", aluform_df)
+    add_sheet_with_data(wb, "Handover", handover_df)
+    add_sheet_with_data(wb, "Finishing", finishing_df)
+    
     bio = io.BytesIO()
     wb.save(bio)
     bio.seek(0)
     fname = f"Flat_Status_{proj}_{building}_{(floor or 'ALL')}_{datetime.now().strftime('%Y-%m-%d')}.xlsx".replace("/", "-")
-    # Persist to temp and apply borders + wrap formatting across all cells
-    tmp_path = os.path.join(tempfile.gettempdir(), f"flat_export_{uuid.uuid4().hex}.xlsx")
-    with open(tmp_path, "wb") as fh:
-        fh.write(bio.getvalue())
-    try:
-        wb2 = load_workbook(tmp_path)
-        thin = Side(border_style="thin", color="000000")
-        border = Border(left=thin, right=thin, top=thin, bottom=thin)
-        align = Alignment(wrap_text=True, vertical="center")
-        for ws in wb2.worksheets:
-            max_row = ws.max_row or 1
-            max_col = ws.max_column or 1
-            for row in ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
-                for cell in row:
-                    try:
-                        cell.border = border
-                        cell.alignment = align
-                    except Exception:
-                        pass
-        out_bio = io.BytesIO()
-        wb2.save(out_bio)
-        out_bio.seek(0)
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-    return send_file(out_bio, as_attachment=True, download_name=fname, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+    return send_file(bio, as_attachment=True, download_name=fname, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/")

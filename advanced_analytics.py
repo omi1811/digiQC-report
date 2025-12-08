@@ -13,6 +13,7 @@ from datetime import datetime, date, timedelta
 from typing import Dict, List, Tuple
 from collections import defaultdict
 import re
+from project_utils import canonicalize_project_name
 
 
 class AdvancedAnalytics:
@@ -182,7 +183,7 @@ class AdvancedAnalytics:
         grouped = df.groupby([proj_col, 'Location L1', 'Location L2'])
         
         for (project, building, floor), group_df in grouped:
-            project = str(project).strip()
+            project = canonicalize_project_name(str(project).strip())
             building = str(building).strip()
             floor = str(floor).strip()
             
@@ -242,21 +243,35 @@ class AdvancedAnalytics:
             'by_issue_type': []
         }
         
-        # By Location (Building + Floor)
+        # By Location (Project + Building/Floor)
         if all(col in df.columns for col in ['Location L1', 'Location L2']):
-            df['__LocationKey'] = df['Location L1'].astype(str) + ' / ' + df['Location L2'].astype(str)
-            loc_counts = df['__LocationKey'].value_counts().head(10)
-            
-            for loc, count in loc_counts.items():
-                loc_df = df[df['__LocationKey'] == loc]
+            if 'Project' in df.columns:
+                proj_col = 'Project'
+            elif 'Project Name' in df.columns:
+                proj_col = 'Project Name'
+            else:
+                proj_col = 'Location L0'
+
+            df['__ProjectKey'] = df[proj_col].astype(str).apply(lambda x: canonicalize_project_name(x.strip()))
+            df['__LocationKey'] = df['Location L1'].astype(str).str.strip() + ' / ' + df['Location L2'].astype(str).str.strip()
+
+            grouped = df.groupby(['__ProjectKey', '__LocationKey'])
+            rows = []
+            for (project, loc), loc_df in grouped:
+                if not str(loc).strip():
+                    continue
+                count = len(loc_df)
                 closed = len(loc_df[loc_df['Current Status'].astype(str).str.upper().isin({'CLOSED', 'RESPONDED'})])
                 closure_rate = round(closed / count * 100, 1) if count > 0 else 0
-                
-                results['by_location'].append({
-                    'location': str(loc),
+                rows.append({
+                    'project': str(project).strip(),
+                    'location': str(loc).strip(),
                     'count': int(count),
                     'closure_rate': closure_rate
                 })
+
+            # Sort by issue count descending and take top 10
+            results['by_location'] = sorted(rows, key=lambda x: x['count'], reverse=True)[:10]
         
         # By Contractor/Team
         if 'Assigned Team' in df.columns:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 import tempfile
 import uuid
 from datetime import date, datetime
@@ -491,6 +492,7 @@ def daily_dashboard_get():
 @app.post("/weekly-report")
 @login_required
 def weekly_report():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
     f = request.files.get("eqc")
     if f:
         # Use a temporary directory for processing
@@ -500,12 +502,12 @@ def weekly_report():
                 out.write(f.read())
             import subprocess, sys as _sys
             cmd = [_sys.executable, "Weekly_report.py", "--input", in_path]
-            proc = subprocess.run(cmd, cwd=os.getcwd(), capture_output=True, text=True)
+            proc = subprocess.run(cmd, cwd=script_dir, capture_output=True, text=True)
             if proc.returncode != 0:
                 return f"Failed to build weekly workbook.\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}", 500
-            out_xlsx = os.path.join(os.getcwd(), "EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx")
+            out_xlsx = os.path.join(script_dir, "EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx")
             if not os.path.exists(out_xlsx):
-                return f"Workbook not found after generation.", 500
+                return f"Workbook not found after generation. Expected at: {out_xlsx}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}", 500
             # Apply formatting before sending
             content = _format_xlsx_from_path(out_xlsx)
             try:
@@ -521,12 +523,12 @@ def weekly_report():
             return redirect(url_for("index"))
         import subprocess, sys as _sys
         cmd = [_sys.executable, "Weekly_report.py", "--input", p]
-        proc = subprocess.run(cmd, cwd=os.getcwd(), capture_output=True, text=True)
+        proc = subprocess.run(cmd, cwd=script_dir, capture_output=True, text=True)
         if proc.returncode != 0:
             return f"Failed to build weekly workbook.\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}", 500
-        out_xlsx = os.path.join(os.getcwd(), "EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx")
+        out_xlsx = os.path.join(script_dir, "EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx")
         if not os.path.exists(out_xlsx):
-            return f"Workbook not found after generation.", 500
+            return f"Workbook not found after generation. Expected at: {out_xlsx}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}", 500
         # Apply formatting before sending
         content = _format_xlsx_from_path(out_xlsx)
         try:
@@ -951,8 +953,6 @@ def flat_report_index():
             scope_flat = dff[dff["__Flat"].astype(str).fillna("").replace("", "UNKNOWN").eq(flat or "")].copy()
         scope_floor = dfl.copy()
 
-    items_by_cat: Dict[_Tuple[int, str], _List[Dict]] = {}
-
     def _latest_per_checklist(frame: pd.DataFrame) -> pd.DataFrame:
         if frame is None or frame.empty:
             return frame.iloc[0:0]
@@ -962,6 +962,66 @@ def flat_report_index():
         idxs = tmp.sort_values("__DateOrd").groupby("__ChecklistKey").tail(1).index
         return tmp.loc[idxs]
 
+    def _is_rcc_checklist(name: str) -> bool:
+        import re as _re
+        s = (name or "").lower()
+        rcc_patterns = [
+            r"\brcc\b|reinforc|shuttering|\bstruct|slab|column|beam|footing",
+            r"aluform|internal\s*handover|handover",
+        ]
+        for pat in rcc_patterns:
+            try:
+                if _re.search(pat, s, _re.I):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _base_name(n: str) -> str:
+        import re as _re
+        if not isinstance(n, str):
+            return str(n)
+        s = n.strip()
+        s_norm = s.lower()
+        
+        # Known standardized names
+        fixes = {
+            r'painting.*internal': 'Painting Works : Internal',
+            r'painting.*external': 'Painting Works : External',
+            r'waterproof.*boxtype': 'Waterproofing works: Toilet and Skirting',
+            r'waterproof.*toilet': 'Waterproofing works: Toilet and Skirting',
+            r'waterproof.*skirting': 'Waterproofing works: Toilet and Skirting',
+            r'tiling.*kitchen.*platform': 'Tiling - Kitchen Platform',
+            r'tiling.*kitchen.*sink': 'Tiling - Kitchen Platform',
+            r'tiling[-\s]*toilet.*dado': 'Tiling - Toilet Dado',
+            r'kitchen\s*dado': 'Kitchen Dado Checklist',
+            r'gypsum\s*plaster': 'Gypsum Plaster Works',
+            r'aac\s*block': 'AAC Block Work',
+            r'\brcc\b.*footing': 'RCC Footing',
+            r'\brcc\b.*column': 'RCC Column',
+            r'\brcc\b.*beam': 'RCC Beam',
+            r'\brcc\b.*slab': 'RCC Slab',
+        }
+        for pat, nm in fixes.items():
+            if _re.search(pat, s_norm):
+                return nm
+        
+        # Remove contractor/team name at the end (common patterns)
+        # E.g., "GYPSUM PLASTER WORKS  Faujan" -> "GYPSUM PLASTER WORKS"
+        s = _re.sub(r'\s{2,}[A-Za-z]+\s*$', '', s)  # Double space followed by word
+        s = _re.sub(r'\s+[A-Z][a-z]+\s+[A-Z][a-z]+\s*$', '', s)  # "Om Enterprises" pattern
+        s = _re.sub(r'\s*:\s*$', '', s)  # Trailing colon
+        s = _re.sub(r'\s+$', '', s)  # Trailing spaces
+        
+        if '.' in s:
+            return s.split('.', 1)[0].strip()
+        if ':' in s and s.split(':', 1)[1].strip():
+            return s  # Keep if there's text after colon
+        elif ':' in s:
+            return s.split(':', 1)[0].strip()
+        
+        return s.strip()
+
     if floor == "ALL":
         reps_flat = scope_flat.iloc[0:0]
         reps_floor = scope_floor.iloc[0:0]
@@ -969,31 +1029,51 @@ def flat_report_index():
         reps_flat = _latest_per_checklist(scope_flat)
         reps_floor = _latest_per_checklist(scope_floor)
 
-    for src, only_cat1 in ((reps_floor, True), (reps_flat, False)):
-        if src is None or src.empty:
-            continue
-        for _, row in src.iterrows():
-            cl = row["__Checklist"]
+    rcc_items: _List[Dict] = []
+    finishing_items_by_cat: Dict[_Tuple[int, str], _List[Dict]] = {}
+
+    # Combine all reps from both floor and flat level
+    all_reps = pd.concat([reps_floor, reps_flat], ignore_index=True) if (not reps_floor.empty and not reps_flat.empty) else (reps_floor if not reps_floor.empty else reps_flat)
+    
+    if all_reps is not None and not all_reps.empty:
+        for _, row in all_reps.iterrows():
+            cl_raw = row["__Checklist"]
+            cl = _base_name(cl_raw)
             url = row.get("__URL", "")
             stage = row.get("__Stage", "")
             status = str(row.get("Status", "")).strip()
-            idx, cat = _map_checklist_to_category(cl)
-            if only_cat1 and idx != 0:
-                continue
-            if (idx, cat) not in items_by_cat:
-                items_by_cat[(idx, cat)] = []
-            items_by_cat[(idx, cat)].append({
-                "checklist": cl,
-                "url": url,
-                "stage": stage,
-                "status": status,
-                "date": row.get("__Date"),
-            })
+            
+            # Determine category based on checklist type, not source
+            if _is_rcc_checklist(cl_raw):
+                # RCC checklists (structural/floor-level) go to RCC table
+                rcc_items.append({
+                    "checklist": cl,
+                    "checklist_raw": cl_raw,
+                    "url": url,
+                    "stage": stage,
+                    "status": status,
+                    "date": row.get("__Date"),
+                })
+            else:
+                # Finishing checklists (flat-level) go to Finishing categories
+                idx, cat = _map_checklist_to_category(cl_raw)
+                if (idx, cat) not in finishing_items_by_cat:
+                    finishing_items_by_cat[(idx, cat)] = []
+                finishing_items_by_cat[(idx, cat)].append({
+                    "checklist": cl,
+                    "checklist_raw": cl_raw,
+                    "url": url,
+                    "stage": stage,
+                    "status": status,
+                    "date": row.get("__Date"),
+                })
 
-    ordered_keys_all: _List[_Tuple[int, str]] = []
+    ordered_finishing_keys: _List[_Tuple[int, str]] = []
     for i, (label, _) in enumerate(CATEGORY_ORDER):
-        ordered_keys_all.append((i, label))
-    ordered_keys_all.append((len(CATEGORY_ORDER), UNCATEGORIZED_LABEL))
+        if i == 0:
+            continue
+        ordered_finishing_keys.append((i, label))
+    ordered_finishing_keys.append((len(CATEGORY_ORDER), UNCATEGORIZED_LABEL))
 
     return render_template(
         "flat_report.html",
@@ -1006,8 +1086,9 @@ def flat_report_index():
         selected_floor=floor,
         flats=flats_all,
         selected_flat=flat,
-        items_by_cat=items_by_cat,
-        ordered_keys_all=ordered_keys_all,
+        rcc_items=rcc_items,
+        finishing_items_by_cat=finishing_items_by_cat,
+        ordered_finishing_keys=ordered_finishing_keys,
         show_only_export=(floor == "ALL"),
     )
 
@@ -1694,9 +1775,56 @@ def api_ai_issues_patterns():
         return jsonify({"error": "No Issues file uploaded. Please upload a file first."}), 400
     
     try:
-        result = analyze_issues_file(path, use_ai=True)
-        return jsonify(result)
+        # Use threading timeout for cross-platform compatibility (Windows doesn't have signal.alarm)
+        import threading
+        import queue
+        
+        result_queue = queue.Queue()
+        error_queue = queue.Queue()
+        
+        def analysis_worker():
+            try:
+                result = analyze_issues_file(path, use_ai=False)
+                # DEBUG: Log the result structure
+                print(f"[DEBUG] analyze_issues_file returned: {type(result)} with keys: {result.keys() if isinstance(result, dict) else 'N/A'}", file=sys.stderr)
+                result_queue.put(result)
+            except Exception as e:
+                print(f"[DEBUG] Exception in worker: {str(e)}", file=sys.stderr)
+                error_queue.put(str(e))
+        
+        # Start analysis in a separate thread
+        worker_thread = threading.Thread(target=analysis_worker, daemon=True)
+        worker_thread.start()
+        
+        # Wait up to 30 seconds for the result
+        worker_thread.join(timeout=30)
+        
+        # Check if thread is still running (timeout occurred)
+        if worker_thread.is_alive():
+            print("[DEBUG] Worker thread timeout after 30 seconds", file=sys.stderr)
+            return jsonify({
+                "error": "Analysis took too long (exceeded 30 seconds).",
+                "note": "The file may be too large or the AI model is slow. Try: 1) Upload a smaller file, 2) Simplify the data format, or 3) Try again later"
+            }), 504
+        
+        # Check for errors
+        if not error_queue.empty():
+            error_msg = error_queue.get()
+            print(f"[DEBUG] Error from queue: {error_msg}", file=sys.stderr)
+            return jsonify({"error": error_msg}), 500
+        
+        # Get the result
+        if not result_queue.empty():
+            result = result_queue.get()
+            num_teams = len(result.get('teams', []))
+            print(f"[DEBUG] Returning result with {num_teams} teams", file=sys.stderr)
+            return jsonify(result)
+        
+        print("[DEBUG] Result queue is empty!", file=sys.stderr)
+        return jsonify({"error": "Unknown error: no result produced"}), 500
+        
     except Exception as e:
+        print(f"[DEBUG] Top-level exception: {str(e)}", file=sys.stderr)
         return jsonify({"error": str(e)}), 500
 
 
@@ -1830,35 +1958,15 @@ def quality_dashboard_page():
 @app.get("/quality-expert")
 @login_required
 def quality_expert_page():
-    """Render the Quality Expert Assistant page."""
-    return render_template("quality_expert.html")
+    """Feature retired to reduce latency."""
+    return redirect(url_for("index"))
 
 
 @app.post("/api/quality-expert/ask")
 @login_required
 def api_quality_expert_ask():
-    """API endpoint for Civil Quality AI questions."""
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "No data provided"}), 400
-    
-    # Client sends 'context' as a dict (ContextState)
-    # If it's the old string format, handle it gracefully
-    context_data = data.get("context", {})
-    if isinstance(context_data, str):
-        context_data = {"extra_info": {"user_notes": context_data}}
-        
-    question = data.get("question", "")
-    
-    if not question:
-        return jsonify({"error": "Question is required"}), 400
-        
-    try:
-        from civil_quality.engine import process_query
-        result = process_query(question, context_data)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """API retired."""
+    return jsonify({"error": "Quality Expert is disabled"}), 410
 
 
 if __name__ == "__main__":

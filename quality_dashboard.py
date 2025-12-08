@@ -7,6 +7,7 @@ import pandas as pd
 from datetime import datetime, date
 from typing import Dict, List, Tuple
 import re
+from project_utils import canonicalize_project_name
 
 
 def _filter_demo(df: pd.DataFrame) -> pd.DataFrame:
@@ -31,25 +32,45 @@ def _parse_date(s: str) -> date | None:
 
 
 def _get_project_name(row: pd.Series) -> str:
-    """Extract project name from row, removing company suffix."""
+    """Extract and canonicalize project name from row."""
     # Priority: Project Name > Location L0 > Project
     for col in ['Project Name', 'Location L0', 'Project']:
         if col in row.index:
             name = str(row[col]).strip()
             if name and name not in ('', 'nan', 'None'):
-                # Remove company name patterns (e.g., "Itrend-" prefix, "Saheel" suffix)
-                name = re.sub(r'^Itrend[-\s]*', '', name, flags=re.I)
-                return name
+                # Use the shared canonicalization function for consistency
+                return canonicalize_project_name(name)
     return 'Unknown'
 
 
-def _is_external(row: pd.Series) -> bool:
-    """Check if observation is External (Omkar/External team)."""
-    team = str(row.get('Assigned Team', '')).lower()
-    return 'omkar' in team or 'external' in team
+def _is_external(row: pd.Series, external_names: str = "Omkar") -> bool:
+    """Check if observation is External based on Raised By field.
+    
+    Matches analysis_issues.py logic for consistency:
+    - External if Raised By exactly matches any external name (case-insensitive)
+    - Support multiple names via comma or pipe separators
+    - Default external names: "Omkar"
+    """
+    raised_by = str(row.get("Raised By", "")).strip().upper()
+    
+    # Parse external names (support comma or pipe separators)
+    import re as _re
+    names_raw = (external_names or "").strip()
+    if not names_raw:
+        return False
+    
+    tokens = [t.strip() for t in _re.split(r"[\|,]", names_raw) if t.strip()]
+    up_tokens = [t.upper() for t in tokens]
+    
+    # Exact match (case-insensitive)
+    for token in up_tokens:
+        if raised_by == token:
+            return True
+    
+    return False
 
 
-def generate_quality_dashboard(eqc_df: pd.DataFrame, issues_df: pd.DataFrame, target_date: date = None) -> dict:
+def generate_quality_dashboard(eqc_df: pd.DataFrame, issues_df: pd.DataFrame, target_date: date = None, external_names: str = "Omkar") -> dict:
     """
     Generate combined quality dashboard data.
     
@@ -57,6 +78,7 @@ def generate_quality_dashboard(eqc_df: pd.DataFrame, issues_df: pd.DataFrame, ta
         eqc_df: EQC CSV DataFrame
         issues_df: Instructions CSV DataFrame
         target_date: Target date for Today (defaults to today)
+        external_names: Names to identify as external (comma or pipe separated, default: "Omkar")
     
     Returns:
         dict with project-wise observations and EQC data
@@ -73,6 +95,14 @@ def generate_quality_dashboard(eqc_df: pd.DataFrame, issues_df: pd.DataFrame, ta
         safety_mask = issues['Type L0'].astype(str).str.contains('safety', case=False, na=False)
         issues = issues[~safety_mask]
     
+    # Ensure required columns exist
+    if 'Raised On Date' not in issues.columns:
+        issues['Raised On Date'] = None
+    if 'Raised By' not in issues.columns:
+        issues['Raised By'] = ""
+    if 'Current Status' not in issues.columns:
+        issues['Current Status'] = ""
+    
     # Parse dates
     if 'Raised On Date' in issues.columns:
         issues['__RaisedDate'] = issues['Raised On Date'].apply(_parse_date)
@@ -84,8 +114,8 @@ def generate_quality_dashboard(eqc_df: pd.DataFrame, issues_df: pd.DataFrame, ta
     issues['__Project'] = issues.apply(_get_project_name, axis=1)
     eqc['__Project'] = eqc.apply(_get_project_name, axis=1)
     
-    # Determine Internal/External
-    issues['__IsExternal'] = issues.apply(_is_external, axis=1)
+    # Determine Internal/External using the same logic as analysis_issues.py
+    issues['__IsExternal'] = issues.apply(lambda row: _is_external(row, external_names), axis=1)
     
     # Get unique projects (from both)
     all_projects = sorted(set(issues['__Project'].unique()) | set(eqc['__Project'].unique()))

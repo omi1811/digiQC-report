@@ -16,23 +16,12 @@
 
     <!-- File Status -->
     <div class="row mb-4">
-        <div class="col-md-6">
-            <div class="card">
-                <div class="card-body d-flex align-items-center gap-3">
-                    <i class="bi bi-file-earmark-spreadsheet text-primary" style="font-size: 1.5rem;"></i>
-                    <div>
-                        <div class="small text-muted">EQC File</div>
-                        <div class="fw-semibold">{{ eqc_file or 'Not uploaded' }}</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-6">
+        <div class="col-12">
             <div class="card">
                 <div class="card-body d-flex align-items-center gap-3">
                     <i class="bi bi-file-earmark-text text-warning" style="font-size: 1.5rem;"></i>
                     <div>
-                        <div class="small text-muted">Issues File</div>
+                        <div class="small text-muted">Instructions/Issues File</div>
                         <div class="fw-semibold">{{ issues_file or 'Not uploaded' }}</div>
                     </div>
                 </div>
@@ -40,34 +29,15 @@
         </div>
     </div>
 
-    <!-- Analysis Cards -->
-    <div class="row g-4">
-        <!-- EQC Completion Analysis -->
-        <div class="col-lg-6">
-            <div class="card h-100">
-                <div class="card-header bg-primary text-white">
-                    <i class="bi bi-check2-circle me-2"></i>EQC Completion Analysis
-                </div>
-                <div class="card-body">
-                    <p class="card-text text-muted">Analyze completion rates by building/floor and identify exceptions.
-                    </p>
-                    <button class="btn btn-primary" id="btnEqcAnalysis" {% if not eqc_file %}disabled{% endif %}>
-                        <span class="spinner-border spinner-border-sm d-none me-1" id="spinEqc"></span>
-                        Run Analysis
-                    </button>
-                    <div id="eqcResults" class="mt-3"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Issues Pattern Analysis -->
-        <div class="col-lg-6">
-            <div class="card h-100">
+    <!-- Issues Pattern Analysis -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
                 <div class="card-header bg-warning text-dark">
-                    <i class="bi bi-exclamation-triangle me-2"></i>Issues Pattern Analysis
+                    <i class="bi bi-people me-2"></i>Teams & Assigned Instructions Analysis
                 </div>
                 <div class="card-body">
-                    <p class="card-text text-muted">Find most repeating issues with AI-powered semantic clustering.</p>
+                    <p class="card-text text-muted">View top 7-10 assigned teams with most issues and their most repetitive instructions.</p>
                     <button class="btn btn-warning" id="btnIssuesAnalysis" {% if not issues_file %}disabled{% endif %}>
                         <span class="spinner-border spinner-border-sm d-none me-1" id="spinIssues"></span>
                         Run Analysis
@@ -76,91 +46,12 @@
                 </div>
             </div>
         </div>
-
-        <!-- Checklist Standardization -->
-        <div class="col-lg-12">
-            <div class="card">
-                <div class="card-header bg-success text-white">
-                    <i class="bi bi-list-check me-2"></i>Checklist Name Standardization
-                </div>
-                <div class="card-body">
-                    <p class="card-text text-muted">Strip contractor names and suggest semantic groupings for similar
-                        checklist types.</p>
-                    <button class="btn btn-success" id="btnStandardize" {% if not eqc_file %}disabled{% endif %}>
-                        <span class="spinner-border spinner-border-sm d-none me-1" id="spinStd"></span>
-                        Analyze & Suggest
-                    </button>
-                    <div id="standardizeResults" class="mt-3"></div>
-                </div>
-            </div>
-        </div>
     </div>
 </div>
 
 <script>
     document.addEventListener('DOMContentLoaded', function () {
-        // EQC Completion Analysis
-        document.getElementById('btnEqcAnalysis')?.addEventListener('click', async function () {
-            const btn = this;
-            const spin = document.getElementById('spinEqc');
-            const results = document.getElementById('eqcResults');
-
-            btn.disabled = true;
-            spin.classList.remove('d-none');
-            results.innerHTML = '<div class="text-muted">Analyzing...</div>';
-
-            try {
-                const resp = await fetch('/api/ai/eqc-completion', { method: 'POST' });
-                const data = await resp.json();
-
-                if (data.error) {
-                    results.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
-                } else {
-                    let html = `
-          <div class="alert alert-info">
-            <strong>Overall:</strong> ${data.summary.completion_rate}% complete 
-            (${data.summary.completed}/${data.summary.total_checks} checks)
-          </div>
-        `;
-
-                    // Buildings summary
-                    if (data.by_building && Object.keys(data.by_building).length > 0) {
-                        html += '<h6>By Building:</h6><ul class="list-group mb-3">';
-                        for (const [building, stats] of Object.entries(data.by_building)) {
-                            const pct = stats.completion_rate;
-                            const color = pct >= 80 ? 'success' : pct >= 50 ? 'warning' : 'danger';
-                            html += `<li class="list-group-item d-flex justify-content-between">
-              <span>${building}</span>
-              <span class="badge bg-${color}">${pct}%</span>
-            </li>`;
-                        }
-                        html += '</ul>';
-                    }
-
-                    // Exceptions
-                    if (data.exceptions && data.exceptions.length > 0) {
-                        html += '<h6 class="text-danger">Exceptions (Low Completion):</h6><ul class="list-group">';
-                        for (const exc of data.exceptions) {
-                            html += `<li class="list-group-item list-group-item-warning">
-              <strong>${exc.location}</strong>: ${exc.completion_rate}% 
-              (${exc.pending_count} pending)
-              <br><small class="text-muted">${exc.pending_types?.join(', ') || ''}</small>
-            </li>`;
-                        }
-                        html += '</ul>';
-                    }
-
-                    results.innerHTML = html;
-                }
-            } catch (e) {
-                results.innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
-            }
-
-            btn.disabled = false;
-            spin.classList.add('d-none');
-        });
-
-        // Issues Pattern Analysis
+        // Instructions/Issues Pattern Analysis
         document.getElementById('btnIssuesAnalysis')?.addEventListener('click', async function () {
             const btn = this;
             const spin = document.getElementById('spinIssues');
@@ -168,105 +59,143 @@
 
             btn.disabled = true;
             spin.classList.remove('d-none');
-            results.innerHTML = '<div class="text-muted">Analyzing...</div>';
+            results.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split me-2"></i>Analyzing (this may take up to 30 seconds)...</div>';
+            console.log('[DEBUG] Starting fetch request...');
 
             try {
-                const resp = await fetch('/api/ai/issues-patterns', { method: 'POST' });
-                const data = await resp.json();
+                // Use 40s timeout on client side (backend has 30s timeout)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    console.log('[DEBUG] Client timeout - aborting request');
+                    controller.abort();
+                }, 40000);
+                
+                console.log('[DEBUG] Sending POST to /api/ai/issues-patterns');
+                const resp = await fetch('/api/ai/issues-patterns', { 
+                    method: 'POST',
+                    signal: controller.signal 
+                });
+                clearTimeout(timeoutId);
+                
+                console.log(`[DEBUG] Response status: ${resp.status}`);
+                console.log(`[DEBUG] Response headers: ${resp.headers.get('content-type')}`);
+                
+                if (!resp.ok) {
+                    console.error(`[DEBUG] HTTP Error: ${resp.status}`);
+                    const text = await resp.text();
+                    console.error(`[DEBUG] Response body: ${text}`);
+                    results.innerHTML = `<div class="alert alert-danger"><strong>HTTP Error ${resp.status}:</strong> Failed to fetch data from server.<br><small>Response: ${text.substring(0, 200)}</small></div>`;
+                    btn.disabled = false;
+                    spin.classList.add('d-none');
+                    return;
+                }
+                
+                let data;
+                try {
+                    const text = await resp.text();
+                    console.log(`[DEBUG] Response text length: ${text.length}`);
+                    console.log(`[DEBUG] Response preview: ${text.substring(0, 500)}`);
+                    data = JSON.parse(text);
+                    console.log('[DEBUG] Successfully parsed JSON');
+                    console.log(`[DEBUG] Data keys: ${Object.keys(data)}`);
+                    console.log(`[DEBUG] Data.teams length: ${data.teams ? data.teams.length : 'undefined'}`);
+                    console.log(`[DEBUG] Full data structure:`, data);
+                } catch (parseError) {
+                    console.error(`[DEBUG] JSON parse error: ${parseError.message}`);
+                    results.innerHTML = `<div class="alert alert-danger"><strong>Parse Error:</strong> Server returned invalid JSON.<br><small>${parseError.message}</small></div>`;
+                    btn.disabled = false;
+                    spin.classList.add('d-none');
+                    return;
+                }
 
                 if (data.error) {
-                    results.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                    console.error(`[DEBUG] API returned error: ${data.error}`);
+                    let errorHtml = `<div class="alert alert-danger"><strong>Error:</strong> ${data.error}`;
+                    if (data.note) {
+                        errorHtml += `<br><small>${data.note}</small>`;
+                    }
+                    errorHtml += '</div>';
+                    results.innerHTML = errorHtml;
                 } else {
-                    let html = `
-          <div class="alert alert-info">
-            <strong>Total Issues:</strong> ${data.summary.total_issues} 
-            | <strong>Closure Rate:</strong> ${data.summary.closure_rate}%
-          </div>
-        `;
-
-                    // Top issues
-                    if (data.top_issues && data.top_issues.length > 0) {
-                        html += '<h6>Top Repeating Issues:</h6><ol class="list-group list-group-numbered mb-3">';
-                        for (const issue of data.top_issues.slice(0, 10)) {
-                            html += `<li class="list-group-item d-flex justify-content-between">
-              <span>${issue.description}</span>
-              <span class="badge bg-danger">${issue.count}</span>
-            </li>`;
-                        }
-                        html += '</ol>';
+                    let html = '';
+                    
+                    if (data.note && data.note.trim()) {
+                        html += `<div class="alert alert-info small"><i class="bi bi-info-circle me-2"></i>${data.note}</div>`;
                     }
 
-                    // AI Clusters
-                    if (data.issue_clusters && data.issue_clusters.length > 0) {
-                        html += '<h6><i class="bi bi-robot"></i> AI-Detected Similar Issues:</h6><ul class="list-group">';
-                        for (const cluster of data.issue_clusters) {
-                            html += `<li class="list-group-item">
-              <strong>${cluster.main}</strong>
-              <br><small class="text-muted">Similar: ${cluster.similar?.join(', ') || ''}</small>
-            </li>`;
-                        }
-                        html += '</ul>';
+                    // Display teams with their repetitive instructions
+                    if (data.teams && data.teams.length > 0) {
+                        console.log(`[DEBUG] Displaying ${data.teams.length} teams`);
+                        html += '<div class="accordion" id="teamsAccordion">';
+                        
+                        data.teams.forEach((team, idx) => {
+                            // Validate team object has required properties
+                            if (!team || typeof team !== 'object') {
+                                console.error(`[DEBUG] Invalid team at index ${idx}:`, team);
+                                return;
+                            }
+                            
+                            const teamId = `team_${idx}`;
+                            const isExpanded = idx === 0;
+                            const teamName = team.team || 'Unknown Team';
+                            const totalIssues = team.total_issues || 0;
+                            
+                            console.log(`[DEBUG] Processing team: ${teamName}, issues: ${totalIssues}`);
+                            
+                            html += `
+                            <div class="accordion-item">
+                                <h2 class="accordion-header">
+                                    <button class="accordion-button ${!isExpanded ? 'collapsed' : ''}" type="button" 
+                                            data-bs-toggle="collapse" data-bs-target="#${teamId}">
+                                        <strong>${teamName}</strong>
+                                        <span class="badge bg-danger ms-2">${totalIssues} issues</span>
+                                    </button>
+                                </h2>
+                                <div id="${teamId}" class="accordion-collapse collapse ${isExpanded ? 'show' : ''}" 
+                                     data-bs-parent="#teamsAccordion">
+                                    <div class="accordion-body">
+                                        <h6><i class="bi bi-exclamation-circle me-2"></i>Top Repetitive Instructions:</h6>
+                                        <ol class="list-group list-group-numbered">`;
+                            
+                            if (team.top_instructions && Array.isArray(team.top_instructions) && team.top_instructions.length > 0) {
+                                team.top_instructions.forEach((instruction, instIdx) => {
+                                    const desc = instruction.description || 'Unknown';
+                                    const count = instruction.count || 0;
+                                    console.log(`[DEBUG] Instruction ${instIdx + 1}: "${desc}" (${count})`);
+                                    html += `
+                                            <li class="list-group-item d-flex justify-content-between align-items-start">
+                                                <span>${desc}</span>
+                                                <span class="badge bg-warning text-dark">${count}</span>
+                                            </li>`;
+                                });
+                            } else {
+                                console.warn(`[DEBUG] No instructions for team: ${teamName}`);
+                                html += `<li class="list-group-item">No instructions found</li>`;
+                            }
+                            
+                            html += `
+                                        </ol>
+                                    </div>
+                                </div>
+                            </div>`;
+                        });
+                        
+                        html += '</div>';
+                    } else {
+                        console.warn('[DEBUG] No teams found in response');
+                        html = '<div class="alert alert-secondary">No teams or instructions found.</div>';
                     }
 
                     results.innerHTML = html;
                 }
             } catch (e) {
-                results.innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
-            }
-
-            btn.disabled = false;
-            spin.classList.add('d-none');
-        });
-
-        // Checklist Standardization
-        document.getElementById('btnStandardize')?.addEventListener('click', async function () {
-            const btn = this;
-            const spin = document.getElementById('spinStd');
-            const results = document.getElementById('standardizeResults');
-
-            btn.disabled = true;
-            spin.classList.remove('d-none');
-            results.innerHTML = '<div class="text-muted">Analyzing...</div>';
-
-            try {
-                const resp = await fetch('/api/ai/standardize-checklists', { method: 'POST' });
-                const data = await resp.json();
-
-                if (data.error) {
-                    results.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                console.error(`[DEBUG] Catch block error: ${e.name} - ${e.message}`);
+                if (e.name === 'AbortError') {
+                    results.innerHTML = `<div class="alert alert-danger"><strong>Timeout Error:</strong> Analysis took too long (exceeded 40 seconds). 
+                        <br><small>Try: 1) Upload a smaller file, 2) Check your internet connection, or 3) Try again later</small></div>`;
                 } else {
-                    let html = `
-          <div class="alert alert-info">
-            <strong>Unique Checklists:</strong> ${data.stats?.total_unique || 0}
-            | <strong>Mappings Created:</strong> ${data.stats?.mappings_created || 0}
-          </div>
-        `;
-
-                    // Mappings
-                    if (data.mappings && Object.keys(data.mappings).length > 0) {
-                        html += '<h6>Contractor Names Removed:</h6><table class="table table-sm table-striped"><thead><tr><th>Original</th><th>Standardized</th></tr></thead><tbody>';
-                        for (const [orig, std] of Object.entries(data.mappings).slice(0, 15)) {
-                            html += `<tr><td class="text-danger"><s>${orig.substring(0, 50)}...</s></td><td class="text-success">${std}</td></tr>`;
-                        }
-                        html += '</tbody></table>';
-                    }
-
-                    // Suggested semantic groups
-                    if (data.suggested_groups && data.suggested_groups.length > 0) {
-                        html += '<h6><i class="bi bi-robot"></i> Suggested Semantic Groupings:</h6><ul class="list-group">';
-                        for (const group of data.suggested_groups) {
-                            html += `<li class="list-group-item">
-              <strong class="text-success">${group.canonical}</strong> (${group.count} similar)
-              <br><small class="text-muted">Variations: ${group.variations?.slice(0, 3).join(', ') || ''}</small>
-            </li>`;
-                        }
-                        html += '</ul>';
-                    }
-
-                    results.innerHTML = html;
+                    results.innerHTML = `<div class="alert alert-danger"><strong>Error:</strong> ${e.message}</div>`;
                 }
-            } catch (e) {
-                results.innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
             }
 
             btn.disabled = false;

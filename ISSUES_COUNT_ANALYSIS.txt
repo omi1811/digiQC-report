@@ -1,0 +1,78 @@
+"""
+ISSUES COUNT MISMATCH - ROOT CAUSE ANALYSIS
+===========================================
+
+CSV FILE: CSV-INSTRUCTION-LATEST-REPORT-12-06-2025-06-03-49.csv
+TOTAL ROWS IN CSV: 2,819
+
+DATA PIPELINE BREAKDOWN:
+------------------------
+
+1. RAW CSV: 2,819 rows
+   - Status breakdown:
+     * CLOSED: 2,630
+     * RAISED: 167
+     * RESPONDED: 18
+     * REJECTED: 4
+
+2. AFTER DEMO FILTER: 2,711 rows (-108 rows)
+   - Removed: 108 DEMO project rows
+   - Projects filtered: "DEMO" in Project Name
+
+3. AFTER QUALITY FILTER: 2,199 rows (-512 rows)
+   - Removed: 512 Safety-related issues
+   - Filter logic: Excludes rows where Type L0 contains "safety" (case-insensitive)
+   - This is the MAJOR reduction!
+
+4. EXTERNAL/INTERNAL TAGGING: 2,199 rows (no change)
+   - External: 135 issues (Raised By = "Omkar")
+   - Internal: 2,064 issues (Raised By ≠ "Omkar")
+
+FINAL COUNTS (What Dashboard Shows):
+------------------------------------
+TOTAL QUALITY ISSUES: 2,199 (excludes 512 Safety + 108 DEMO)
+
+EXTERNAL (Omkar):
+  - Total: 135
+  - Open: 3 (RAISED: 3, REJECTED: 0)
+  - Closed: 132 (CLOSED: 132, RESPONDED: 0)
+
+INTERNAL (Others):
+  - Total: 2,064
+  - Open: 110 (RAISED: 110, REJECTED: 0)
+  - Closed: 1,954 (CLOSED: 1,944, RESPONDED: 10)
+
+TIMEFRAME BREAKDOWN:
+-------------------
+TODAY (2025-12-06): 0 issues
+MONTH (December 2025): 39 issues
+  - External: 0
+  - Internal: 39 (26 Open, 13 Closed)
+ALL TIME: 2,199 issues
+
+WHY THE MISMATCH?
+-----------------
+The dashboard shows 2,199 issues instead of 2,819 because:
+
+1. INTENTIONAL FILTERING:
+   - 108 DEMO project issues removed (testing/demo data)
+   - 512 Safety issues removed (by design in _filter_quality function)
+
+2. SAFETY EXCLUSION LOGIC:
+   - File: analysis_issues.py, line 95-97
+   - Logic: if "Type L0" contains "safety" (case-insensitive), exclude
+   - Examples of filtered types:
+     * "Safety Poor 1.8.25"
+     * Any other safety-related types
+
+RECOMMENDATION:
+--------------
+If you want Safety issues included in the dashboard:
+1. Remove or modify the Safety filter in _filter_quality()
+2. Alternatively, create a separate "Safety Dashboard" to track these 512 issues
+
+If you want to keep Safety excluded (current behavior):
+- The counts are CORRECT
+- Dashboard intentionally shows only quality issues (not safety)
+- Total: 2,199 quality issues = 2,819 CSV rows - 108 DEMO - 512 Safety
+"""

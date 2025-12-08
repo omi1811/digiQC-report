@@ -123,7 +123,7 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
         alerts_filename = f"{site_name}-{label}-digiQC-report_EQC_Alerts.csv"
         pd.DataFrame([], columns=["Alerts"]).to_csv(alerts_filename, index=False)
         pd.DataFrame(columns=["Checklists"]).to_csv(wide_filename, index=False)
-        print(f"✅ Wrote empty {label} outputs for {site_name} (no rows in window)")
+        print(f"[OK] Wrote empty {label} outputs for {site_name} (no rows in window)")
         return
     # Normalize Stage
     df["Stage_Norm"] = df.get("Stage", "").apply(normalize_stage)
@@ -135,7 +135,7 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
         if col in df.columns:
             df[col] = df[col].astype("category")
     # Pivot
-    print(f"➡️  Building pivot for {site_name} ({label}) on {len(df)} rows…")
+    print(f"-> Building pivot for {site_name} ({label}) on {len(df)} rows...")
     summary = (
         df.groupby(["Eqc Type", "Location L1", "Stage_Norm"], observed=True)
           .size()
@@ -194,7 +194,7 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
     wide_filename = f"{site_name}-{label}-digiQC-report_EQC_Summary_WithTotals_Building-wise.csv"
     alerts_filename = f"{site_name}-{label}-digiQC-report_EQC_Alerts.csv"
     pd.DataFrame(alerts, columns=["Alerts"]).to_csv(alerts_filename, index=False)
-    print(f"✅ Alerts written to {alerts_filename}")
+    print(f"[OK] Alerts written to {alerts_filename}")
     # Prepare wide-format CSV
     print(f"Raw entries ({label}):", len(df))
     print(f"Summary total count ({label}):", summary.select_dtypes(include=["number"]).sum().sum())
@@ -227,7 +227,7 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
         summary_final = summary_final.T.groupby(level=list(range(summary_final.columns.nlevels))).sum().T
     sorted_cols = sorted(summary_final.columns.tolist(), key=sort_key)
     summary_final = summary_final.reindex(columns=sorted_cols)
-    print(f"✅ Computed {label} combined summary in memory; writing only building-wise wide report next")
+    print(f"[OK] Computed {label} combined summary in memory; writing only building-wise wide report next")
     # Build tidy per-building -> wide for output CSV
     try:
         raw_buildings = list(df.get('Location L1', pd.Series(dtype=str)).unique())
@@ -258,7 +258,7 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
             print('No weekly per-building rows to write.')
             # Still write an empty CSV with header
             pd.DataFrame(columns=["Checklists"]).to_csv(wide_filename, index=False)
-            print(f"✅ Wrote weekly wide-format per-building summary to {wide_filename}")
+            print(f"[OK] Wrote weekly wide-format per-building summary to {wide_filename}")
             return
         def longest_common_prefix_tokens(names):
             if not names:
@@ -379,7 +379,7 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
             # Fallback: write without total row if anything unexpected happens
             wide_with_total = wide_un_reset
         wide_with_total.to_csv(wide_filename, index=False)
-        print(f"✅ Wrote {label} wide-format per-building summary to {wide_filename}")
+        print(f"[OK] Wrote {label} wide-format per-building summary to {wide_filename}")
     except Exception as e:
         print(f'Failed to write {label} wide-format per-building summary:', str(e))
 
