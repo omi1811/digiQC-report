@@ -144,13 +144,36 @@ def _status_bucket(s: str) -> str:
     return "Other"
 
 
-def _count_frame(df: pd.DataFrame) -> Counts:
+UPDATED_DATE_COL = "Current Status Updated On (Date)"
+
+
+def _count_frame(
+    df: pd.DataFrame,
+    parent_df: "pd.DataFrame | None" = None,
+    close_mask: "pd.Series | None" = None,
+) -> Counts:
+    """Count raised/open/closed observations.
+
+    Args:
+        df          : Rows raised in the time-period (filtered by Raised On Date).
+        parent_df   : Full group (project+category) used to count closed-in-period.
+                      When provided together with close_mask, closed count =
+                      rows in parent_df whose Updated Date matches the period.
+        close_mask  : Boolean Series aligned to parent_df.index — True = Updated
+                      Date falls in the period.  Ignored when parent_df is None.
+    """
     total = len(df)
     if "Current Status" not in df.columns:
         return Counts(total=total, open=0, closed=0)
     buckets = df["Current Status"].map(_status_bucket)
     open_cnt = int((buckets == "Open").sum())
-    closed_cnt = int((buckets == "Closed").sum())
+    if close_mask is not None and parent_df is not None and "Current Status" in parent_df.columns:
+        # Closed count: items closed IN the period (regardless of when they were raised)
+        parent_buckets = parent_df["Current Status"].map(_status_bucket)
+        close_mask_aligned = close_mask.reindex(parent_df.index, fill_value=False)
+        closed_cnt = int(((parent_buckets == "Closed") & close_mask_aligned).sum())
+    else:
+        closed_cnt = int((buckets == "Closed").sum())
     return Counts(total=total, open=open_cnt, closed=closed_cnt)
 
 
@@ -174,6 +197,12 @@ def analyze_file(path: str, target: date, external_name: str) -> Dict[str, Dict[
         dates = pd.Series([None] * len(df))
 
     masks = _timeframe_masks(dates, target)
+    # Build close masks using "Current Status Updated On (Date)" for closed-in-period counts
+    if UPDATED_DATE_COL in df.columns:
+        close_dates = df[UPDATED_DATE_COL].map(_parse_date_safe)
+    else:
+        close_dates = pd.Series([None] * len(df), index=df.index)
+    close_masks = _timeframe_masks(close_dates, target)
     out: Dict[str, Dict[str, Counts]] = {}
     for category, cat_df in df.groupby("__Category"):
         cat_res: Dict[str, Counts] = {}
@@ -181,7 +210,11 @@ def analyze_file(path: str, target: date, external_name: str) -> Dict[str, Dict[
             # align mask to the subset index to avoid reindex warnings
             mask_aligned = mask.reindex(cat_df.index, fill_value=False)
             sub = cat_df[mask_aligned]
-            cat_res[tf] = _count_frame(sub)
+            if tf != "all":
+                close_mask_aligned = close_masks[tf].reindex(cat_df.index, fill_value=False)
+                cat_res[tf] = _count_frame(sub, parent_df=cat_df, close_mask=close_mask_aligned)
+            else:
+                cat_res[tf] = _count_frame(sub)
         out[category] = cat_res
     # Ensure both categories present even if empty
     for cat in ("External", "Internal"):
