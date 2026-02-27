@@ -145,10 +145,10 @@ def generate_quality_dashboard(eqc_df: pd.DataFrame, issues_df: pd.DataFrame, ta
                 if sub_df.empty:
                     return {'raised': 0, 'open': 0, 'closed': 0}
                 statuses = sub_df['Current Status'].astype(str).str.upper()
-                total = len(sub_df)
                 open_count = int(statuses.isin(open_statuses).sum())
                 closed_count = int(statuses.isin(closed_statuses).sum())
-                return {'raised': total, 'open': open_count, 'closed': closed_count}
+                raised_count = open_count + closed_count  # Total raised = open + closed
+                return {'raised': raised_count, 'open': open_count, 'closed': closed_count}
             
             # Today
             today_mask = df[date_col] == target_date if date_col in df.columns else pd.Series(False, index=df.index)

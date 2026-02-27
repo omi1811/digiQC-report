@@ -28,6 +28,12 @@ def canonicalize_project_name(name: Optional[str]) -> str:
         return 'Itrend Futura'
     if 'palacio' in key:
         return 'Itrend Palacio'
+    if 'vesta' in key:
+        return 'Itrend Vesta'
+    if 'landmarc' in key and 'saheel' not in key:
+        return 'Landmarc'
+    if 'saheel' in key and 'landmarc' in key:
+        return 'Saheel Landmarc'
 
     # Generic normalization for any other project
     tokens = [t for t in key.split(' ') if t]

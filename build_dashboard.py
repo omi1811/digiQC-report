@@ -102,7 +102,8 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
         n_during = int(vc.get("During", 0))
         n_post = int(vc.get("Post", 0))
         n_other = int(vc.get("Other", 0))
-        return {"Pre": n_pre, "During": n_during, "Post": n_post + n_other}
+        # Single-stage checklists (Other) are included in all three columns
+        return {"Pre": n_pre + n_other, "During": n_during + n_other, "Post": n_post + n_other}
 
     def _compute_counts_raw(sub_df: pd.DataFrame) -> Dict[str, int]:
         """Raw counts using normalized stages (kept for potential future use)."""
@@ -160,9 +161,11 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
         - else -> Other
 
         Output:
-        - Pre = total rows
-        - During = During + Post + Other
-        - Post = Post + Other
+        - Pre = total rows (including Other for single-stage checklists)
+        - During = During + Post + Other (single-stage checklists counted here)
+        - Post = Post + Other (single-stage checklists counted here)
+        
+        Note: Other represents single-stage checklists (Paver block, Kerb stone, etc.)
         """
         if sub_df is None or sub_df.empty:
             return {"Pre": 0, "During": 0, "Post": 0}

@@ -232,7 +232,12 @@
 </div>
 <div class="mt-3">
   <a class="btn btn-outline-primary"
-    href="{{ url_for('flat_report_export', path=path, project=selected_project, building=selected_building, floor=selected_floor) }}">Export
-    Excel (status grid)</a>
+    href="{{ url_for('flat_report_export', path=path, project=selected_project, building=selected_building, floor=selected_floor) }}">
+    <i class="bi bi-file-earmark-excel me-1"></i>Export Excel (This Building/Floor)
+  </a>
+  <a class="btn btn-success ms-2"
+    href="{{ url_for('flat_report_export_project', path=path, project=selected_project) }}">
+    <i class="bi bi-building me-1"></i>Export Whole Project (All Buildings)
+  </a>
 </div>
 {% endblock %}

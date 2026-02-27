@@ -164,23 +164,47 @@ def base_name(n: str) -> str:
     s = n.strip()
     s_norm = s.lower()
     
+    # Handle "Checklist for ..." names - preserve full name with Title Case
+    if s_norm.startswith('checklist for '):
+        # Remove contractor suffix if present (double space + name pattern)
+        cleaned = re.sub(r'\s{2,}[A-Za-z]+\s*$', '', s)
+        cleaned = re.sub(r'\s+\([^)]+\)\s*$', '', cleaned)  # Remove (Contractor Name)
+        return cleaned.strip().title()
+    
     # Known standardized names
     fixes = {
         r'painting.*internal': 'Painting Works : Internal',
         r'painting.*external': 'Painting Works : External',
-        r'waterproof.*boxtype': 'Waterproofing works: Toilet and Skirting',
-        r'waterproof.*toilet': 'Waterproofing works: Toilet and Skirting',
-        r'waterproof.*skirting': 'Waterproofing works: Toilet and Skirting',
+        r'painting\s*works\s*:\s*external\s*texture': 'Painting Works : External Texture',
+        r'waterproof.*boxtype': 'Waterproofing Works: Toilet and Skirting',
+        r'waterproof.*toilet': 'Waterproofing Works: Toilet and Skirting',
+        r'waterproof.*skirting': 'Waterproofing Works: Toilet and Skirting',
         r'tiling.*kitchen.*platform': 'Tiling - Kitchen Platform',
         r'tiling.*kitchen.*sink': 'Tiling - Kitchen Platform',
         r'tiling[-\s]*toilet.*dado': 'Tiling - Toilet Dado',
-        r'kitchen\s*dado': 'Kitchen Dado Checklist',
+        r'tiling.*flooring': 'Tiling - Flooring Work',
+        r'kitchen\s*dado': 'Kitchen Dado',
         r'gypsum\s*plaster': 'Gypsum Plaster Works',
         r'aac\s*block': 'AAC Block Work',
-        r'\brcc\b.*footing': 'RCC Footing',
-        r'\brcc\b.*column': 'RCC Column',
-        r'\brcc\b.*beam': 'RCC Beam',
-        r'\brcc\b.*slab': 'RCC Slab',
+        r'brick\s*work': 'Brick Work',
+        r'external\s*plaster': 'External Plaster Works',
+        r'internal\s*plaster': 'Internal Plaster Works',
+        r'\brcc\b.*footing': 'RCC Footing Work',
+        r'\brcc\b.*column': 'RCC Column Work',
+        r'\brcc\b.*beam': 'RCC Beam Work',
+        r'\brcc\b.*slab': 'RCC Slab Work',
+        r'\brcc\b\s*work': 'RCC Works',
+        r'm\s*s\s*railing': 'MS Railing',
+        r's\s*s\s*railing': 'SS Railing',
+        r'alluminium\s*window': 'Aluminium Window and Door Work',
+        r'aluminium\s*window': 'Aluminium Window and Door Work',
+        r'carpentry\s*work': 'Carpentry Work : Door Frame & Shutters',
+        r'plumbing\s*work': 'Plumbing Work - Internal',
+        r'electrical\s*work': 'Electrical Works',
+        r'false\s*ceiling': 'False Ceiling Work',
+        r'trimix': 'Trimix Work',
+        r'aluform.*checklist': 'Aluform Checklist',
+        r'fire\s*fighting': 'Fire Fighting Work',
     }
     for pat, name in fixes.items():
         if re.search(pat, s_norm):
@@ -246,21 +270,43 @@ def map_checklist_to_category(name: str) -> Tuple[int, str]:
 
 
 def robust_read_eqc(path: str) -> pd.DataFrame:
+    import warnings
+    print(f"[DEBUG robust_read_eqc] Reading CSV from: {path}")
+    
     last_err = None
     for sep in ("\t", ",", None):
         try:
-            if sep is None:
-                return pd.read_csv(path, dtype=str, keep_default_na=False, sep=None, engine="python")
-            else:
-                return pd.read_csv(path, dtype=str, keep_default_na=False, sep=sep, engine="python")
+            # Try with on_bad_lines parameter (pandas >= 1.3.0)
+            # Suppress ParserWarnings since we're handling bad lines
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=pd.errors.ParserWarning)
+                try:
+                    if sep is None:
+                        result = pd.read_csv(path, dtype=str, keep_default_na=False, sep=None, engine="python", on_bad_lines='skip')
+                    else:
+                        result = pd.read_csv(path, dtype=str, keep_default_na=False, sep=sep, engine="python", on_bad_lines='skip')
+                    print(f"[DEBUG robust_read_eqc] Successfully read {len(result)} rows with sep={repr(sep)}")
+                    return result
+                except TypeError:
+                    # Fall back for older pandas versions
+                    if sep is None:
+                        result = pd.read_csv(path, dtype=str, keep_default_na=False, sep=None, engine="python", error_bad_lines=False, warn_bad_lines=False)
+                    else:
+                        result = pd.read_csv(path, dtype=str, keep_default_na=False, sep=sep, engine="python", error_bad_lines=False, warn_bad_lines=False)
+                    print(f"[DEBUG robust_read_eqc] Successfully read {len(result)} rows with sep={repr(sep)} (old pandas)")
+                    return result
         except Exception as e:
             last_err = e
+            print(f"[DEBUG robust_read_eqc] Failed with sep={repr(sep)}: {e}")
     raise last_err if last_err else RuntimeError("Failed to read EQC file")
 
 
 def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
     # Work on a copy to avoid SettingWithCopy warnings
     df = df.copy()
+    
+    print(f"[DEBUG prepare_frame] Input rows: {len(df)}")
+    
     # Drop DEMO rows
     cols = [c for c in ("Project", "Project Name", "Location L0") if c in df.columns]
     if cols:
@@ -268,6 +314,8 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
         for c in cols:
             mask |= df[c].astype(str).str.contains("DEMO", case=False, na=False)
         df = df[~mask]
+    
+    print(f"[DEBUG prepare_frame] After DEMO filter: {len(df)}")
     # Stage normalization & dates
     if "Stage" in df.columns:
         df["__Stage"] = df["Stage"].map(EQC.normalize_stage)
@@ -453,6 +501,23 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
     df["__Building"] = bff[0].astype(str)
     df["__Floor"] = bff[1].astype(str)
     df["__Flat"] = bff[2].astype(str)
+    
+    print(f"[DEBUG prepare_frame] Unique buildings extracted: {sorted(df['__Building'].unique().tolist()[:10])}")
+    print(f"[DEBUG prepare_frame] Unique floors extracted: {sorted(df['__Floor'].unique().tolist()[:10])}")
+    
+    # Extract Pour information from Location L3 if it contains "pour"
+    def extract_pour(row: pd.Series) -> str:
+        import re as _re
+        for loc_field in ("Location L3", "Location L4", "Location Variable"):
+            val = str(row.get(loc_field, "") or "").strip()
+            if val and _re.search(r"\bpour\b", val, _re.I):
+                # Extract pour number/name (e.g., "Pour 1", "Pour 2")
+                m = _re.search(r"\bpour[\s\-]*(\d+|[A-Za-z0-9]+)\b", val, _re.I)
+                if m:
+                    return f"Pour {m.group(1)}"
+                return val
+        return ""
+    df["__Pour"] = df.apply(extract_pour, axis=1)
     # Checklist name lives in 'Eqc Type' in our extracts
     df["__Checklist"] = df.get("Eqc Type", "").astype(str)
     # Optional link
@@ -460,6 +525,10 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
         df["__URL"] = df["URL"].astype(str)
     else:
         df["__URL"] = ""
+    
+    print(f"[DEBUG prepare_frame] Final output rows: {len(df)}")
+    print(f"[DEBUG prepare_frame] Sample buildings: {df['__Building'].value_counts().head(5).to_dict()}")
+    
     return df
 
 
@@ -679,16 +748,48 @@ def flat_report_export():
     if not os.path.exists(path):
         return f"EQC file not found: {path}", 404
     df = prepare_frame(robust_read_eqc(path))
+    
+    # Debug: log total rows read
+    print(f"[DEBUG] Total rows read from CSV: {len(df)}")
+    
     projects = sorted([p for p in df["__Project"].astype(str).str.strip().unique() if p])
     proj = request.args.get("project") or (projects[0] if projects else None)
     dfp = df[df["__Project"].astype(str).str.strip().eq(proj)] if proj else df.iloc[0:0]
+    
+    print(f"[DEBUG] Project: {proj}, Rows after project filter: {len(dfp)}")
+    
     building = request.args.get("building") or ""
+    print(f"[DEBUG] Looking for building: '{building}'")
+    print(f"[DEBUG] Available buildings in data: {sorted(dfp['__Building'].unique().tolist())}")
+    
+    # Try exact match first
     dfl = dfp[dfp["__Building"].astype(str).fillna("").replace("", "UNKNOWN").eq(building or "")]
+    
+    # If no exact match, try case-insensitive match
+    if len(dfl) == 0 and building:
+        print(f"[DEBUG] No exact match found, trying case-insensitive match...")
+        dfl = dfp[dfp["__Building"].astype(str).str.lower().fillna("").replace("", "unknown").eq(building.lower())]
+    
+    print(f"[DEBUG] Building: {building}, Rows after building filter: {len(dfl)}")
+    
     floor = request.args.get("floor") or ""
     if floor == "ALL":
         dff = dfl.copy()
     else:
         dff = dfl[dfl["__Floor"].astype(str).fillna("").replace("", "UNKNOWN").eq(floor or "")]
+    
+    print(f"[DEBUG] Floor: {floor}, Rows after floor filter: {len(dff)}")
+    
+    # If no data found, provide helpful error message
+    if len(dff) == 0:
+        print(f"[ERROR] No data found after filtering!")
+        print(f"[ERROR] Filters: Project='{proj}', Building='{building}', Floor='{floor}'")
+        if len(dfp) > 0:
+            available_buildings = sorted(dfp["__Building"].unique().tolist())
+            available_floors = sorted(dfp["__Floor"].unique().tolist())
+            print(f"[ERROR] Available buildings for this project: {available_buildings}")
+            print(f"[ERROR] Available floors for this project: {available_floors}")
+        return f"No data found for the selected filters. Project: {proj}, Building: {building}, Floor: {floor}. Please check the browser console for available options.", 404
 
     # Determine flats on this floor
     def _flat_key(v: str):
@@ -705,9 +806,65 @@ def flat_report_export():
         return (9, 0, s.lower())
     flats = sorted(set(dff["__Flat"].astype(str).fillna("").replace("", "UNKNOWN")), key=_flat_key)
     
-    # Helper function to build a sheet with status matrix
+    # Helper function to build floor-level sheet (for RCC, Aluform, Handover)
+    def build_floor_status_sheet(tmp_data: pd.DataFrame) -> pd.DataFrame:
+        """Build floor-level status list for RCC/Aluform/Handover checklists (not flat-wise)."""
+        if tmp_data.empty:
+            return pd.DataFrame()
+        
+        tmp = tmp_data.copy()
+        tmp["__ChecklistKey"] = tmp["__Checklist"].astype(str).str.strip().str.lower()
+        tmp["__DateOrd"] = pd.to_datetime(tmp["__Date"]).fillna(pd.Timestamp.min)
+        # Get latest entry per checklist (floor-level)
+        tmp = tmp.sort_values("__DateOrd").groupby("__ChecklistKey", as_index=False).tail(1)
+
+        # Build list with checklist details
+        def status_symbol(status: str) -> str:
+            up = (status or "").strip().upper()
+            if up == "PASSED":
+                return "✓ Passed"
+            if "PROGRESS" in up:
+                return "– In Progress"
+            if "REDO" in up:
+                return "↻ Redo"
+            if "FAIL" in up:
+                return "✗ Failed"
+            return "– Pending"
+        
+        def get_category(checklist: str) -> str:
+            """Determine category for a checklist."""
+            if is_rcc_checklist(checklist):
+                return "RCC / Structural"
+            elif is_aluform_checklist(checklist):
+                return "Aluform"
+            elif is_handover_checklist(checklist):
+                return "Internal Handover"
+            return "Other"
+
+        grid = []
+        for _, row in tmp.iterrows():
+            cl_raw = str(row["__Checklist"])
+            cl = base_name(cl_raw)
+            category = get_category(cl_raw)
+            status = status_symbol(str(row.get("Status", "")))
+            stage = str(row.get("__Stage", ""))
+            date = str(row.get("__Date", ""))
+            pour = str(row.get("__Pour", "")).strip() if "__Pour" in row and row.get("__Pour") else ""
+            
+            grid.append({
+                "Category": category,
+                "Checklist": cl,
+                "Pour": pour if pour else "–",
+                "Stage": stage,
+                "Status": status,
+                "Date": date,
+            })
+
+        return pd.DataFrame(grid, columns=["Category", "Checklist", "Pour", "Stage", "Status", "Date"]) if grid else pd.DataFrame()
+    
+    # Helper function to build flat-wise sheet (for Finishing checklists)
     def build_status_sheet(tmp_data: pd.DataFrame) -> pd.DataFrame:
-        """Build status matrix for a set of checklists (RCC, Aluform, Handover, or Finishing)."""
+        """Build status matrix for flat-level checklists (Finishing)."""
         if tmp_data.empty:
             return pd.DataFrame()
         
@@ -753,30 +910,177 @@ def flat_report_export():
         return pd.DataFrame(grid, columns=["Flat", "Overall"] + checklist_cols) if grid else pd.DataFrame()
     
     # Separate data by checklist type
-    rcc_data = dff[dff["__Checklist"].apply(is_rcc_checklist)]
-    aluform_data = dff[dff["__Checklist"].apply(is_aluform_checklist)]
-    handover_data = dff[dff["__Checklist"].apply(is_handover_checklist)]
+    # Combine RCC, Aluform, and Handover into one category (all floor-level)
+    structural_data = dff[dff["__Checklist"].apply(lambda x: is_rcc_checklist(x) or is_aluform_checklist(x) or is_handover_checklist(x))]
     finishing_data = dff[~dff["__Checklist"].apply(lambda x: is_rcc_checklist(x) or is_aluform_checklist(x) or is_handover_checklist(x))]
     
+    # Data validation: ensure no checklists are lost
+    total_checklists = len(dff)
+    structural_count = len(structural_data)
+    finishing_count = len(finishing_data)
+    data_validation_passed = (structural_count + finishing_count == total_checklists)
+    
+    # Debug logging
+    print(f"[DEBUG] Total rows after filter: {total_checklists}")
+    print(f"[DEBUG] Structural rows: {structural_count}")
+    print(f"[DEBUG] Finishing rows: {finishing_count}")
+    if total_checklists > 0:
+        print(f"[DEBUG] Sample checklist names: {dff['__Checklist'].head(5).tolist()}")
+    
     # Build status DataFrames for each category
-    rcc_df = build_status_sheet(rcc_data)
-    aluform_df = build_status_sheet(aluform_data)
-    handover_df = build_status_sheet(handover_data)
+    # Structural (RCC, Aluform, Handover combined) - floor-level (not flat-wise)
+    structural_df = build_floor_status_sheet(structural_data)
+    # Finishing is flat-wise
     finishing_df = build_status_sheet(finishing_data)
 
     # Write Excel with separate sheets
     from openpyxl import Workbook
     from openpyxl.utils.dataframe import dataframe_to_rows
-    from openpyxl.styles import PatternFill
+    from openpyxl.styles import PatternFill, Font, Border, Side
     
     wb = Workbook()
     wb.remove(wb.active)  # Remove the default sheet
     
-    # Helper to add a sheet with formatting
-    def add_sheet_with_data(workbook, sheet_name: str, data_df: pd.DataFrame) -> None:
-        """Add a sheet with status data and formatting."""
+    # Add Summary sheet first for data validation
+    summary_ws = wb.create_sheet(title="Summary", index=0)
+    summary_ws.cell(row=1, column=1, value="Data Export Summary")
+    summary_ws.cell(row=1, column=1).font = Font(bold=True, size=14)
+    summary_ws.cell(row=3, column=1, value="Project:")
+    summary_ws.cell(row=3, column=2, value=proj)
+    summary_ws.cell(row=4, column=1, value="Building:")
+    summary_ws.cell(row=4, column=2, value=building)
+    summary_ws.cell(row=5, column=1, value="Floor:")
+    summary_ws.cell(row=5, column=2, value=(floor or 'ALL'))
+    summary_ws.cell(row=6, column=1, value="Export Date:")
+    summary_ws.cell(row=6, column=2, value=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    
+    summary_ws.cell(row=8, column=1, value="Data Validation:")
+    summary_ws.cell(row=8, column=1).font = Font(bold=True)
+    summary_ws.cell(row=9, column=1, value="Total Checklists:")
+    summary_ws.cell(row=9, column=2, value=total_checklists)
+    summary_ws.cell(row=10, column=1, value="Structural/Handover:")
+    summary_ws.cell(row=10, column=2, value=structural_count)
+    summary_ws.cell(row=11, column=1, value="Finishing:")
+    summary_ws.cell(row=11, column=2, value=finishing_count)
+    summary_ws.cell(row=12, column=1, value="Validation Status:")
+    if total_checklists == 0:
+        summary_ws.cell(row=12, column=2, value="⚠ WARNING: No data found for selected filters!")
+        summary_ws.cell(row=12, column=2).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    elif data_validation_passed:
+        summary_ws.cell(row=12, column=2, value="✓ All data captured (No missing checklists)")
+        summary_ws.cell(row=12, column=2).fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    else:
+        summary_ws.cell(row=12, column=2, value=f"⚠ Warning: {total_checklists - structural_count - finishing_count} checklists may be missing!")
+        summary_ws.cell(row=12, column=2).fill = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
+    
+    summary_ws.cell(row=14, column=1, value="Sheet Organization:")
+    summary_ws.cell(row=14, column=1).font = Font(bold=True)
+    summary_ws.cell(row=15, column=1, value="• Structural & Handover:")
+    summary_ws.cell(row=15, column=2, value="Floor-level checklists (RCC, Aluform, Internal Handover)")
+    summary_ws.cell(row=16, column=1, value="• Finishing:")
+    summary_ws.cell(row=16, column=2, value="Flat-wise matrix (Masonry, Plaster, Tiling, Painting, etc.)")
+    
+    # Apply borders to summary
+    thin = Side(border_style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for row in summary_ws.iter_rows(min_row=1, max_row=16, min_col=1, max_col=2):
+        for cell in row:
+            cell.border = border
+    
+    # Auto-adjust column widths in summary
+    summary_ws.column_dimensions['A'].width = 25
+    summary_ws.column_dimensions['B'].width = 60
+    
+    # Helper to add floor-level sheet (for RCC, Aluform, Handover)
+    def add_floor_level_sheet(workbook, sheet_name: str, data_df: pd.DataFrame) -> None:
+        """Add a floor-level sheet (not flat-wise breakdown)."""
         if data_df.empty:
-            return  # Skip empty sheets
+            # Create sheet even if empty to show that no data exists
+            ws = workbook.create_sheet(title=sheet_name)
+            ws.cell(row=1, column=1, value="Building:")
+            ws.cell(row=1, column=2, value=building)
+            ws.cell(row=1, column=4, value="Floor:")
+            ws.cell(row=1, column=5, value=(floor or 'ALL'))
+            ws.cell(row=3, column=1, value="No data found for this category on the selected floor.")
+            return
+        
+        ws = workbook.create_sheet(title=sheet_name)
+        # Add building name header for clarity
+        ws.cell(row=1, column=1, value="Building:")
+        ws.cell(row=1, column=2, value=building)
+        ws.cell(row=1, column=4, value="Floor:")
+        ws.cell(row=1, column=5, value=(floor or 'ALL'))
+        
+        # Add note explaining floor-level nature
+        ws.cell(row=1, column=7, value="Note:")
+        ws.cell(row=1, column=8, value="These checklists apply at Floor/Pour level, not per flat")
+        
+        # Add data count for validation
+        ws.cell(row=1, column=11, value="Total Rows:")
+        ws.cell(row=1, column=12, value=len(data_df))
+        
+        # Leave row 2 blank, start data at row 3
+        ws.append([])
+        start_row = 3
+        for r in dataframe_to_rows(data_df, index=False, header=True):
+            ws.append(r)
+        
+        green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        yellow = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        red = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
+        gray = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        
+        # Apply coloring to Status column only (5th column)
+        status_col_idx = 5  # Column E (Category, Checklist, Pour, Stage, Status, Date)
+        for row in ws.iter_rows(min_row=start_row+1, min_col=status_col_idx, max_row=ws.max_row, max_col=status_col_idx):
+            for cell in row:
+                val = str(cell.value or "")
+                if "✓" in val or "Passed" in val:
+                    cell.fill = green
+                elif "–" in val or "Progress" in val or "Pending" in val:
+                    cell.fill = yellow
+                elif "✗" in val or "Failed" in val:
+                    cell.fill = red
+                elif "↻" in val or "Redo" in val:
+                    cell.fill = gray
+        
+        # Apply borders and wrap text
+        thin = Side(border_style="thin", color="000000")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        align = Alignment(wrap_text=True, vertical="center")
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                try:
+                    cell.border = border
+                    cell.alignment = align
+                except Exception:
+                    pass
+        
+        # Auto-adjust column widths
+        for col in ws.columns:
+            max_length = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[col_letter].width = adjusted_width
+    
+    # Helper to add flat-level sheet (for Finishing)
+    def add_flat_level_sheet(workbook, sheet_name: str, data_df: pd.DataFrame) -> None:
+        """Add a flat-wise sheet (for Finishing checklists)."""
+        if data_df.empty:
+            # Create sheet even if empty to show that no data exists
+            ws = workbook.create_sheet(title=sheet_name)
+            ws.cell(row=1, column=1, value="Building:")
+            ws.cell(row=1, column=2, value=building)
+            ws.cell(row=1, column=4, value="Floor:")
+            ws.cell(row=1, column=5, value=(floor or 'ALL'))
+            ws.cell(row=3, column=1, value="No data found for this category on the selected floor.")
+            return
         
         ws = workbook.create_sheet(title=sheet_name)
         # Add building name header for clarity
@@ -790,6 +1094,10 @@ def flat_report_export():
         ws.cell(row=1, column=8, value="✓ = Passed")
         ws.cell(row=1, column=9, value="– = In Progress")
         ws.cell(row=1, column=10, value="✗ = Not Done")
+        
+        # Add data count for validation (number of flats shown)
+        ws.cell(row=1, column=12, value="Flats:")
+        ws.cell(row=1, column=13, value=len(data_df))
         
         # Leave row 2 blank, start data at row 3
         ws.append([])
@@ -825,15 +1133,30 @@ def flat_report_export():
                     pass
     
     # Add sheets in order
-    add_sheet_with_data(wb, "RCC / Structural", rcc_df)
-    add_sheet_with_data(wb, "Aluform", aluform_df)
-    add_sheet_with_data(wb, "Handover", handover_df)
-    add_sheet_with_data(wb, "Finishing", finishing_df)
+    # Structural (RCC, Aluform, Handover combined) - floor-level (not flat-wise)
+    add_floor_level_sheet(wb, "Structural & Handover", structural_df)
+    # Finishing is flat-wise
+    add_flat_level_sheet(wb, "Finishing", finishing_df)
     
     bio = io.BytesIO()
     wb.save(bio)
     bio.seek(0)
-    fname = f"Flat_Status_{proj}_{building}_{(floor or 'ALL')}_{datetime.now().strftime('%Y-%m-%d')}.xlsx".replace("/", "-")
+    
+    # Sanitize building name for filename (extract key identifier)
+    import re as _re_fname
+    building_clean = building or "All"
+    # Try to extract just the letter/number (e.g., "A wing" -> "A", "Building B" -> "B")
+    m = _re_fname.search(r'\b([A-Z]\d?|\d+[A-Z]?)\b', building_clean)
+    if m:
+        building_clean = m.group(1)
+    else:
+        # Just remove spaces and special chars
+        building_clean = _re_fname.sub(r'[^\w]', '_', building_clean)
+    
+    floor_clean = (floor or 'ALL').replace(" ", "_")
+    fname = f"Flat_Status_{proj}_{building_clean}_{floor_clean}_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+    # Remove any remaining problematic characters
+    fname = fname.replace("/", "-").replace("\\", "-")
     
     return send_file(bio, as_attachment=True, download_name=fname, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 

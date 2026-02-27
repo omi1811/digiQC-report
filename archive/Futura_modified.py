@@ -344,6 +344,14 @@ try:
             s = n.strip()
             # Normalize known variants to canonical checklist names
             s_norm = s.lower()
+            
+            # Handle "Checklist for ..." names - preserve full name
+            if s_norm.startswith('checklist for '):
+                # Remove contractor suffix if present (double space + name pattern)
+                cleaned = re.sub(r'\s{2,}[A-Za-z]+\s*$', '', s)
+                cleaned = re.sub(r'\s+\([^)]+\)\s*$', '', cleaned)  # Remove (Contractor Name)
+                return cleaned.strip()
+            
             # quick pattern fixes for commonly miswritten names
             fixes = {
                 r'painting.*internal': 'Painting Works : Internal',

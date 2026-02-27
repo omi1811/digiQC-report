@@ -152,7 +152,7 @@ def main():
                 pass
 
     if any_written:
-        print(f"✅ Combined workbook written to {out_xlsx}")
+        print(f"Combined workbook written to {out_xlsx}")
     else:
         print("No sheets were written; nothing to combine.")
 

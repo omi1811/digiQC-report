@@ -122,10 +122,54 @@
                 } else {
                     let html = `
                     <div class="alert alert-${data.summary.total_overdue > 0 ? 'danger' : 'success'}">
-                        <strong>Overdue:</strong> ${data.summary.total_overdue} / ${data.summary.total_issues_with_deadline}
+                        <strong>Overall:</strong> ${data.summary.total_overdue} overdue / ${data.summary.total_issues_with_deadline} total
                         (${data.summary.overdue_percentage}%)
                     </div>
                 `;
+
+                    // Project Summary Table
+                    if (data.project_summary && Object.keys(data.project_summary).length > 0) {
+                        html += '<h6>Issues Summary by Project (DEMO Filtered):</h6>';
+                        html += '<div class="table-responsive"><table class="table table-striped table-bordered table-hover">';
+                        html += '<thead class="table-dark"><tr><th>Project</th><th>Total Issues</th><th>Raised</th><th>Overdue</th><th>% Overdue</th></tr></thead><tbody>';
+                        
+                        // Sort by project name
+                        const projects = Object.entries(data.project_summary).sort((a, b) => a[0].localeCompare(b[0]));
+                        
+                        let totalIssues = 0, totalRaised = 0, totalOverdue = 0;
+                        
+                        for (const [project, stats] of projects) {
+                            totalIssues += stats.total_issues;
+                            totalRaised += stats.raised_issues;
+                            totalOverdue += stats.overdue_issues;
+                            
+                            const percentColor = stats.overdue_percentage >= 80 ? 'danger' : 
+                                               stats.overdue_percentage >= 50 ? 'warning' : 
+                                               stats.overdue_percentage > 0 ? 'info' : 'success';
+                            
+                            html += `<tr>
+                                <td><strong>${project}</strong></td>
+                                <td class="text-center">${stats.total_issues}</td>
+                                <td class="text-center">${stats.raised_issues}</td>
+                                <td class="text-center text-${stats.overdue_issues > 0 ? 'danger' : 'success'} fw-bold">${stats.overdue_issues}</td>
+                                <td class="text-center"><span class="badge bg-${percentColor}">${stats.overdue_percentage}%</span></td>
+                            </tr>`;
+                        }
+                        
+                        // Total row
+                        const totalPercent = totalIssues > 0 ? ((totalOverdue / totalIssues) * 100).toFixed(1) : 0;
+                        const totalColor = totalPercent >= 80 ? 'danger' : totalPercent >= 50 ? 'warning' : totalPercent > 0 ? 'info' : 'success';
+                        
+                        html += `<tr class="table-secondary fw-bold">
+                            <td>TOTAL</td>
+                            <td class="text-center">${totalIssues}</td>
+                            <td class="text-center">${totalRaised}</td>
+                            <td class="text-center text-danger">${totalOverdue}</td>
+                            <td class="text-center"><span class="badge bg-${totalColor}">${totalPercent}%</span></td>
+                        </tr>`;
+                        
+                        html += '</tbody></table></div>';
+                    }
 
                     // By Team
                     if (data.by_team && Object.keys(data.by_team).length > 0) {
@@ -141,9 +185,9 @@
 
                     // Overdue list
                     if (data.overdue_issues && data.overdue_issues.length > 0) {
-                        html += '<h6 class="text-danger">Top Overdue Issues:</h6><div class="table-responsive"><table class="table table-sm table-bordered"><thead class="table-light"><tr><th>Description</th><th>Days</th><th>Team</th><th>Deadline</th></tr></thead><tbody>';
+                        html += '<h6 class="text-danger">Top Overdue Issues:</h6><div class="table-responsive"><table class="table table-sm table-bordered"><thead class="table-light"><tr><th>Project</th><th>Description</th><th>Days</th><th>Team</th><th>Deadline</th></tr></thead><tbody>';
                         for (const issue of data.overdue_issues.slice(0, 10)) {
-                            html += `<tr><td>${issue.description}</td><td class="text-danger fw-bold">${issue.days_overdue}</td><td>${issue.assigned_team}</td><td>${issue.deadline}</td></tr>`;
+                            html += `<tr><td>${issue.project || '-'}</td><td>${issue.description}</td><td class="text-danger fw-bold">${issue.days_overdue}</td><td>${issue.assigned_team}</td><td>${issue.deadline}</td></tr>`;
                         }
                         html += '</tbody></table></div>';
                     }
@@ -238,14 +282,26 @@
                     let html = `
                     <div class="alert alert-${data.summary.total_flagged > 0 ? 'warning' : 'success'}">
                         <strong>Flagged Issues:</strong> ${data.summary.total_flagged}
-                        (out of ${data.summary.approved_checklists} approved checklists)
+                        (out of ${data.summary.approved_checklists} approved checklists across ${data.summary.projects_affected || 0} projects)
                     </div>
                 `;
 
+                    // By Project breakdown
+                    if (data.summary.by_project_count && Object.keys(data.summary.by_project_count).length > 0) {
+                        html += '<h6>By Project:</h6><ul class="list-group mb-3">';
+                        for (const [project, count] of Object.entries(data.summary.by_project_count)) {
+                            html += `<li class="list-group-item d-flex justify-content-between">
+                            <span>${project}</span>
+                            <span class="badge bg-warning text-dark">${count}</span>
+                        </li>`;
+                        }
+                        html += '</ul>';
+                    }
+
                     if (data.flagged_issues && data.flagged_issues.length > 0) {
-                        html += '<h6 class="text-warning">Issues Raised After EQC Approval:</h6><div class="table-responsive"><table class="table table-sm table-bordered"><thead class="table-light"><tr><th>Location</th><th>EQC Type</th><th>Issue Type</th><th>Days After</th><th>Description</th></tr></thead><tbody>';
+                        html += '<h6 class="text-warning">Issues Raised After EQC Approval:</h6><div class="table-responsive"><table class="table table-sm table-bordered"><thead class="table-light"><tr><th>Project</th><th>Location</th><th>EQC Type</th><th>Issue Type</th><th>Days After</th><th>Description</th></tr></thead><tbody>';
                         for (const issue of data.flagged_issues.slice(0, 15)) {
-                            html += `<tr><td>${issue.location}</td><td>${issue.eqc_type}</td><td>${issue.issue_type}</td><td class="text-danger fw-bold">${issue.days_after}</td><td>${issue.issue_description}</td></tr>`;
+                            html += `<tr><td>${issue.project || '-'}</td><td>${issue.location}</td><td>${issue.eqc_type}</td><td>${issue.issue_type}</td><td class="text-danger fw-bold">${issue.days_after}</td><td>${issue.issue_description}</td></tr>`;
                         }
                         html += '</tbody></table></div>';
                     }

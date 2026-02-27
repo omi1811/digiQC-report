@@ -1548,9 +1548,10 @@ def flat_report_export():
         # Build list with checklist details
         def status_symbol(status: str) -> str:
             up = (status or "").strip().upper()
-            if up == "PASSED":
+            # Be more lenient with PASSED detection
+            if "PASS" in up and "FAIL" not in up:
                 return "✓ Passed"
-            if "PROGRESS" in up:
+            if "PROGRESS" in up or "IN_PROGRESS" in up:
                 return "– In Progress"
             if "REDO" in up:
                 return "↻ Redo"
@@ -1596,7 +1597,7 @@ def flat_report_export():
             
             # Build full location for context
             loc_parts = []
-            for loc_col in ["Location L1", "Location L2", "Location L3", "Location L4"]:
+            for loc_col in ["Location L1", "Location L2", "Location Variable", "Location L4"]:
                 if loc_col in row:
                     val = str(row.get(loc_col, "")).strip()
                     if val:
@@ -1637,9 +1638,10 @@ def flat_report_export():
         # Build status matrix
         def status_symbol(status: str) -> str:
             up = (status or "").strip().upper()
-            if up == "PASSED":
+            # Be more lenient with PASSED detection
+            if "PASS" in up and "FAIL" not in up:
                 return "✓"
-            if "PROGRESS" in up:
+            if "PROGRESS" in up or "IN_PROGRESS" in up:
                 return "–"
             return "–" if up else "–"
 
@@ -2009,6 +2011,364 @@ def flat_report_export():
     floor_clean = (floor or 'ALL').replace(" ", "_")
     fname = f"Flat_Status_{proj}_{building_clean}_{floor_clean}_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
     # Remove any remaining problematic characters
+    fname = fname.replace("/", "-").replace("\\", "-")
+    
+    return send_file(bio, as_attachment=True, download_name=fname, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.get("/flat-report/export-project")
+@login_required
+def flat_report_export_project():
+    """Export flat-wise report for ALL buildings in the selected project"""
+    path = request.args.get("path") or _get_session_eqc_path() or "Combined_EQC.csv"
+    if not os.path.exists(path):
+        return f"EQC file not found: {path}", 404
+    df = _prepare_frame(_robust_read_eqc_path(path))
+    
+    projects = sorted([p for p in df["__Project"].astype(str).str.strip().unique() if p])
+    proj = request.args.get("project") or (projects[0] if projects else None)
+    
+    # Filter to selected project
+    dfp = df[df["__Project"].astype(str).str.strip().eq(proj)] if proj else df.iloc[0:0]
+    if len(dfp) == 0 and proj:
+        dfp = df[df["__Project"].astype(str).str.strip().str.lower().eq(proj.lower())]
+    if len(dfp) == 0 and proj:
+        dfp = df[df["__Project"].astype(str).str.strip().str.contains(proj, case=False, na=False)]
+    
+    if len(dfp) == 0:
+        return f"No data found for project: {proj}", 404
+    
+    # Get all buildings in this project
+    all_buildings = sorted([b for b in dfp['__Building'].unique() if str(b).strip()])
+    
+    if not all_buildings:
+        return f"No buildings found for project: {proj}", 404
+    
+    print(f"[DEBUG] Exporting project '{proj}' with {len(all_buildings)} buildings: {all_buildings}")
+    
+    # Create workbook
+    from openpyxl import Workbook
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
+    
+    wb = Workbook()
+    wb.remove(wb.active)
+    
+    # Add summary sheet
+    summary_ws = wb.create_sheet(title="Summary", index=0)
+    summary_ws.cell(row=1, column=1, value="Project-Wide Export Summary")
+    summary_ws.cell(row=1, column=1).font = Font(bold=True, size=14)
+    summary_ws.cell(row=3, column=1, value="Project:")
+    summary_ws.cell(row=3, column=2, value=proj)
+    summary_ws.cell(row=4, column=1, value="Buildings:")
+    summary_ws.cell(row=4, column=2, value=len(all_buildings))
+    summary_ws.cell(row=5, column=1, value="Export Date:")
+    summary_ws.cell(row=5, column=2, value=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    
+    summary_ws.cell(row=7, column=1, value="Buildings Included:")
+    summary_ws.cell(row=7, column=1).font = Font(bold=True)
+    for idx, bldg in enumerate(all_buildings, start=8):
+        summary_ws.cell(row=idx, column=1, value=f"{idx-7}.")
+        summary_ws.cell(row=idx, column=2, value=bldg)
+    
+    # Apply borders to summary
+    thin = Side(border_style="thin", color="000000")
+    border_style = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for row in summary_ws.iter_rows(min_row=1, max_row=7+len(all_buildings), min_col=1, max_col=2):
+        for cell in row:
+            cell.border = border_style
+    
+    summary_ws.column_dimensions['A'].width = 20
+    summary_ws.column_dimensions['B'].width = 40
+    
+    # Helper function to build floor-level status sheet (Structural/Handover)
+    def build_floor_status_sheet_for_building(tmp_data: pd.DataFrame) -> pd.DataFrame:
+        """Build floor-level status list for RCC/Aluform/Handover checklists."""
+        if tmp_data.empty:
+            return pd.DataFrame()
+        
+        tmp = tmp_data.copy()
+        tmp["__ChecklistKey"] = tmp["__Checklist"].astype(str).str.strip().str.lower()
+        tmp["__DateOrd"] = pd.to_datetime(tmp["__Date"]).fillna(pd.Timestamp.min)
+        
+        group_cols = ["__ChecklistKey", "__Building", "__Floor", "__Pour"]
+        tmp = tmp.sort_values("__DateOrd").groupby(group_cols, as_index=False, dropna=False).tail(1)
+        
+        # Debug: Check status values
+        if "Status" in tmp.columns:
+            status_values = tmp["Status"].value_counts()
+            print(f"[DEBUG] Status values in structural data: {status_values.to_dict()}")
+        
+        def status_symbol(status: str) -> str:
+            up = (status or "").strip().upper()
+            # Be more lenient with PASSED detection
+            if "PASS" in up and "FAIL" not in up:
+                return "✓ Passed"
+            if "PROGRESS" in up or "IN_PROGRESS" in up:
+                return "– In Progress"
+            if "REDO" in up:
+                return "↻ Redo"
+            if "FAIL" in up:
+                return "✗ Failed"
+            return "– Pending"
+        
+        def get_category(checklist: str) -> str:
+            if is_rcc_checklist(checklist):
+                return "RCC / Structural"
+            elif is_aluform_checklist(checklist):
+                return "Aluform"
+            elif is_handover_checklist(checklist):
+                return "Internal Handover"
+            return "Other"
+        
+        def get_eqc_stage_status(stage_status: str) -> str:
+            s = str(stage_status or "").strip()
+            if not s or s == "-":
+                return "–"
+            return s.replace("_", " ").title()
+
+        grid = []
+        for _, row in tmp.iterrows():
+            cl_raw = str(row["__Checklist"])
+            cl = base_name(cl_raw)
+            category = get_category(cl_raw)
+            status = status_symbol(str(row.get("Status", "")))
+            stage = str(row.get("__Stage", ""))
+            date = str(row.get("__Date", ""))
+            pour = str(row.get("__Pour", "")).strip() if "__Pour" in row and row.get("__Pour") else ""
+            
+            inspector = str(row.get("Inspector", "")).strip() if "Inspector" in row else "–"
+            team = str(row.get("Team", "")).strip() if "Team" in row else "–"
+            approver = str(row.get("Approver", "-")).strip()
+            if not approver or approver == "-":
+                approver = "Pending"
+            eqc_stage = get_eqc_stage_status(row.get("EQC Stage Status", ""))
+            
+            loc_parts = []
+            for loc_col in ["Location L1", "Location L2", "Location Variable", "Location L4"]:
+                if loc_col in row:
+                    val = str(row.get(loc_col, "")).strip()
+                    if val:
+                        loc_parts.append(val)
+            full_location = " / ".join(loc_parts) if loc_parts else "–"
+            
+            grid.append({
+                "Category": category,
+                "Checklist": cl,
+                "Location": full_location,
+                "Pour": pour if pour else "–",
+                "Stage": stage,
+                "Status": status,
+                "EQC Stage": eqc_stage,
+                "Date": date,
+                "Inspector": inspector,
+                "Team": team,
+                "Approver": approver,
+            })
+
+        return pd.DataFrame(grid, columns=["Category", "Checklist", "Location", "Pour", "Stage", "Status", "EQC Stage", "Date", "Inspector", "Team", "Approver"]) if grid else pd.DataFrame()
+    
+    # Helper function to build flat-wise status matrix (Finishing)
+    def build_flat_status_matrix_for_building(tmp_data: pd.DataFrame, building_flats: list) -> pd.DataFrame:
+        """Build status matrix for flat-level checklists (Finishing)."""
+        if tmp_data.empty:
+            return pd.DataFrame()
+        
+        tmp = tmp_data.copy()
+        tmp["__ChecklistKey"] = tmp["__Checklist"].astype(str).str.strip().str.lower()
+        tmp["__FlatKey"] = tmp["__Flat"].astype(str).fillna("").replace("", "UNKNOWN")
+        tmp["__DateOrd"] = pd.to_datetime(tmp["__Date"]).fillna(pd.Timestamp.min)
+        tmp = tmp.sort_values("__DateOrd").groupby(["__FlatKey", "__ChecklistKey"], as_index=False).tail(1)
+
+        # Debug: Check status values
+        if "Status" in tmp.columns:
+            status_values = tmp["Status"].value_counts()
+            print(f"[DEBUG] Status values in finishing data: {status_values.to_dict()}")
+
+        # Determine checklist columns
+        checklist_cols = list(dict.fromkeys(tmp["__Checklist"].astype(str).tolist()))
+
+        def status_symbol(status: str) -> str:
+            up = (status or "").strip().upper()
+            # Be more lenient with PASSED detection
+            if "PASS" in up and "FAIL" not in up:
+                return "✓"
+            if "PROGRESS" in up or "IN_PROGRESS" in up:
+                return "–"
+            return "–" if up else "–"
+
+        grid = []
+        for flt in building_flats:
+            row = {"Flat": flt}
+            sub = tmp[tmp["__FlatKey"].eq(flt)]
+            present = set(sub["__Checklist"].astype(str))
+            any_present = bool(present)
+            all_complete = True
+            for col in checklist_cols:
+                rec = sub[sub["__Checklist"].astype(str).eq(col)]
+                if rec.empty:
+                    row[col] = "✗"
+                    all_complete = False
+                else:
+                    sym = status_symbol(str(rec.iloc[0].get("Status", "")))
+                    row[col] = sym
+                    if sym != "✓":
+                        all_complete = False
+            row["Overall"] = "✓" if all_complete and any_present else ("–" if any_present else "✗")
+            grid.append(row)
+
+        return pd.DataFrame(grid, columns=["Flat", "Overall"] + checklist_cols) if grid else pd.DataFrame()
+    
+    # Helper to add floor-level sheet (Structural/Handover)
+    def add_floor_level_sheet_project(workbook, sheet_name: str, building_name: str, data_df: pd.DataFrame):
+        if data_df.empty:
+            ws = workbook.create_sheet(title=sheet_name)
+            ws.cell(row=1, column=1, value=f"Building: {building_name}")
+            ws.cell(row=3, column=1, value="No structural/handover data found for this building.")
+            return
+        
+        ws = workbook.create_sheet(title=sheet_name)
+        ws.cell(row=1, column=1, value="Building:")
+        ws.cell(row=1, column=2, value=building_name)
+        ws.cell(row=1, column=7, value="Note:")
+        ws.cell(row=1, column=8, value="Floor/Pour level checklists")
+        ws.cell(row=1, column=11, value="Total:")
+        ws.cell(row=1, column=12, value=len(data_df))
+        
+        ws.append([])
+        start_row = 3
+        for r in dataframe_to_rows(data_df, index=False, header=True):
+            ws.append(r)
+        
+        green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        yellow = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        red = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
+        gray = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        
+        status_col_idx = 6  # Status column
+        for row in ws.iter_rows(min_row=start_row+1, min_col=status_col_idx, max_row=ws.max_row, max_col=status_col_idx):
+            for cell in row:
+                val = str(cell.value or "")
+                if "✓" in val or "Passed" in val:
+                    cell.fill = green
+                elif "–" in val or "Progress" in val or "Pending" in val:
+                    cell.fill = yellow
+                elif "✗" in val or "Failed" in val:
+                    cell.fill = red
+                elif "↻" in val or "Redo" in val:
+                    cell.fill = gray
+        
+        align = Alignment(wrap_text=True, vertical="center")
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                cell.border = border_style
+                cell.alignment = align
+        
+        for col in ws.columns:
+            max_length = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            ws.column_dimensions[col_letter].width = min(max_length + 2, 50)
+    
+    # Helper to add flat-level sheet (Finishing)
+    def add_flat_level_sheet_project(workbook, sheet_name: str, building_name: str, data_df: pd.DataFrame):
+        if data_df.empty:
+            ws = workbook.create_sheet(title=sheet_name)
+            ws.cell(row=1, column=1, value=f"Building: {building_name}")
+            ws.cell(row=3, column=1, value="No finishing data found for this building.")
+            return
+        
+        ws = workbook.create_sheet(title=sheet_name)
+        ws.cell(row=1, column=1, value="Building:")
+        ws.cell(row=1, column=2, value=building_name)
+        ws.cell(row=1, column=7, value="Legend:")
+        ws.cell(row=1, column=8, value="✓ = Passed")
+        ws.cell(row=1, column=9, value="– = In Progress")
+        ws.cell(row=1, column=10, value="✗ = Not Done")
+        ws.cell(row=1, column=12, value="Flats:")
+        ws.cell(row=1, column=13, value=len(data_df))
+        
+        ws.append([])
+        start_row = 3
+        for r in dataframe_to_rows(data_df, index=False, header=True):
+            ws.append(r)
+        
+        green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        yellow = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        red = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
+        
+        for row in ws.iter_rows(min_row=start_row+1, min_col=2, max_row=ws.max_row, max_col=ws.max_column):
+            for cell in row:
+                val = str(cell.value or "")
+                if val == "✓":
+                    cell.fill = green
+                elif val == "–":
+                    cell.fill = yellow
+                elif val == "✗":
+                    cell.fill = red
+        
+        align = Alignment(wrap_text=True, vertical="center")
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                cell.border = border_style
+                cell.alignment = align
+    
+    # Process each building
+    for building in all_buildings:
+        building_data = dfp[dfp["__Building"].astype(str).fillna("").replace("", "UNKNOWN").eq(building)]
+        if building_data.empty:
+            continue
+        
+        # Classify data
+        structural_data = building_data[building_data["__Checklist"].apply(
+            lambda x: is_rcc_checklist(x) or is_aluform_checklist(x) or is_handover_checklist(x)
+        )]
+        finishing_data = building_data[~building_data["__Checklist"].apply(
+            lambda x: is_rcc_checklist(x) or is_aluform_checklist(x) or is_handover_checklist(x)
+        )]
+        
+        # Get flats for this building
+        def _flat_key(v: str):
+            import re as _re
+            s = str(v or "").strip()
+            m = _re.search(r"(shop|flat|unit|apt|apartment)\s*([A-Z]?\d+)([A-Z]?)", s, _re.I)
+            if m:
+                num = int(_re.sub(r"\D", "", m.group(2))) if _re.sub(r"\D", "", m.group(2)) else 0
+                suf = m.group(3).upper() if m.group(3) else ""
+                return (0, num, suf)
+            m2 = _re.search(r"(\d+)", s)
+            if m2:
+                return (1, int(m2.group(1)), "")
+            return (9, 0, s.lower())
+        
+        building_flats = sorted(set(building_data["__Flat"].astype(str).fillna("").replace("", "UNKNOWN")), key=_flat_key)
+        
+        # Build DataFrames
+        structural_df = build_floor_status_sheet_for_building(structural_data)
+        finishing_df = build_flat_status_matrix_for_building(finishing_data, building_flats)
+        
+        # Create sheet names (limit to 31 chars for Excel)
+        import re as _re_sheet
+        building_clean = _re_sheet.sub(r'[^\w]', '_', building)[:15]
+        
+        # Add sheets for this building
+        add_floor_level_sheet_project(wb, f"{building_clean}_Struct"[:31], building, structural_df)
+        add_flat_level_sheet_project(wb, f"{building_clean}_Finish"[:31], building, finishing_df)
+    
+    # Save to BytesIO
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    
+    # Generate filename
+    import re as _re_fname
+    proj_clean = _re_fname.sub(r'[^\w]', '_', proj)
+    fname = f"Flat_Status_Project_{proj_clean}_AllBuildings_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
     fname = fname.replace("/", "-").replace("\\", "-")
     
     return send_file(bio, as_attachment=True, download_name=fname, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

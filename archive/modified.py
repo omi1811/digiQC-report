@@ -316,6 +316,15 @@ try:
             if not isinstance(n, str):
                 return str(n)
             s = n.strip()
+            s_norm = s.lower()
+            
+            # Handle "Checklist for ..." names - preserve full name
+            if s_norm.startswith('checklist for '):
+                # Remove contractor suffix if present (double space + name pattern)
+                cleaned = re.sub(r'\s{2,}[A-Za-z]+\s*$', '', s)
+                cleaned = re.sub(r'\s+\([^)]+\)\s*$', '', cleaned)  # Remove (Contractor Name)
+                return cleaned.strip()
+            
             # if dot or colon present, prefer text before it (common vendor separator)
             if '.' in s:
                 return s.split('.', 1)[0].strip()

@@ -12,8 +12,8 @@ Pre, During, and Post, using this mapping:
 - Stages containing 'during' → During
 - Stages containing 'post' → Post
 - Anything else (e.g., names not containing pre/during/post, and not reinforcement/shuttering)
-    is treated as Other and contributes only to the Post column in the final output
-    (per: "The other EQC's are only in post stage and not in Pre and During").
+    is treated as Other and contributes to all three columns (Pre, During, Post) in the final output
+    (these are single-stage checklists like Paver block, Kerb stone fixing, etc.).
 
 No changes are made to Futura_modified.py. Output is plain stdout for validation.
 """
@@ -36,19 +36,43 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 
 def normalize_stage(stage: str) -> str:
     s = str(stage or "").strip().lower()
-    # Explicit overrides first
+    # Single-stage checklists - these should appear in all columns (Pre, During, Post)
+    # Check these FIRST before general keywords to avoid miscategorization
+    single_stage_patterns = [
+        "pressure test", "pressure testing",
+        "paver block", "paver",
+        "kerb stone", "kerbstone", "curb stone",
+        "water test", "leak test",
+        "hydrostatic test",
+    ]
+    for pattern in single_stage_patterns:
+        if pattern in s:
+            return "Other"
+    
+    # Standard mappings - check these after single-stage patterns
+    # Pre/Before - check before 'during' or 'post' to handle "Pre Shuttering" correctly
+    if "pre" in s or "before" in s or "prior" in s:
+        return "Pre"
+    # Post/After - check before 'during' to handle "POST FIXING" correctly
+    if "post" in s or "after" in s:
+        return "Post"
+    # During/Fixing - check after Pre/Post to avoid conflicts
+    # Exclude single-stage patterns that contain "fixing"
+    if "during" in s or "internal plumbing" in s or "internal handover" in s:
+        return "During"
+    # Only categorize as During if "fixing" is part of a multi-stage checklist
+    if "fixing" in s and ("pre" in s or "post" in s or "during" in s):
+        return "During"
+    # Pour card variations - check for specific positions
+    if "pour card" in s or "pour-card" in s:
+        # This shouldn't be reached if pre/during/post was already detected above
+        return "During"
+    # Reinforcement and Shuttering - only check if not already categorized
     if "reinforce" in s:
         return "Pre"
     if "shutter" in s:
         return "Pre"
-    # Standard mappings
-    if "pre" in s or "before" in s:
-        return "Pre"
-    if "during" in s:
-        return "During"
-    if "post" in s:
-        return "Post"
-    # Other stays distinct; we will add it only to Post column later
+    # Other stays distinct; single-stage checklists will be added to all columns later
     return "Other"
 
 
@@ -108,9 +132,10 @@ def _compute_counts_from_frame(df: pd.DataFrame) -> Dict[str, int]:
     n_other = int(c.get("Other", 0))
 
     # Cumulative logic (updated):
-    # - Pre = Pre + During + Post + Other (Reinforcement/Shuttering are already counted in Pre via normalization)
-    # - During = During + Post + Other
-    # - Post = Post + Other
+    # - Pre = Pre + During + Post + Other (single-stage checklists counted in all columns)
+    # - During = During + Post + Other (single-stage checklists counted in all columns)
+    # - Post = Post + Other (single-stage checklists counted in all columns)
+    # Note: Other represents single-stage checklists (Paver block, Kerb stone, etc.) that should appear in all columns
     pre_out = n_pre + n_during + n_post + n_other
     during_out = n_during + n_post + n_other
     post_out = n_post + n_other
