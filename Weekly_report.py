@@ -272,8 +272,57 @@ def filter_by_mode(base: pd.DataFrame, mode: str) -> pd.DataFrame:
     return base.copy()
 
 # --- Normalize Stage ---
-def normalize_stage(stage: str) -> str:
+def _is_ss_railing_checklist(name: str) -> bool:
+    s = str(name or "").strip().lower()
+    if not s:
+        return False
+    return bool(re.search(r"\b(?:s\s*s|ss|stainless\s*steel)\s*railing\b", s, re.I))
+
+
+def _normalize_ss_railing_stage(stage: str) -> str:
+    s = str(stage or "").strip().lower()
+    if not s:
+        return "Other"
+
+    pre_patterns = [
+        r"\bpre\b",
+        r"\bpre\s*installation\b",
+    ]
+    during_patterns = [
+        r"\bfixing\s*on\s*jamb\s*slab\b",
+        r"\bfixing\s*on\s*upstand\b",
+        r"\bjamb\s*slab\b",
+        r"\bupstand\b",
+        r"\bfixing\b",
+    ]
+    post_patterns = [
+        r"\bpost\b",
+        r"\bpost\s*installation\b",
+        r"\bfinal\b",
+        r"\bhandover\b",
+        r"\bfinishing\b",
+        r"\bglass\s*installation\b",
+        r"\bsilicon\b",
+    ]
+
+    for pat in pre_patterns:
+        if re.search(pat, s, re.I):
+            return "Pre"
+    for pat in during_patterns:
+        if re.search(pat, s, re.I):
+            return "During"
+    for pat in post_patterns:
+        if re.search(pat, s, re.I):
+            return "Post"
+
+    # SS railing naming is inconsistent; default unknown non-empty stages to During.
+    return "During"
+
+
+def normalize_stage(stage: str, checklist_name: str = "") -> str:
     s = str(stage or "").lower()
+    if _is_ss_railing_checklist(checklist_name):
+        return _normalize_ss_railing_stage(s)
     # Single-stage checklists - these should appear in all columns (Pre, During, Post)
     # Check these FIRST before general keywords to avoid miscategorization
     single_stage_patterns = [
@@ -322,8 +371,22 @@ def process_report(df: pd.DataFrame, site_name: str, label: str) -> None:
         pd.DataFrame(columns=["Checklists"]).to_csv(wide_filename, index=False)
         print(f"[OK] Wrote empty {label} outputs for {site_name} (no rows in window)")
         return
-    # Normalize Stage
-    df["Stage_Norm"] = df.get("Stage", "").apply(normalize_stage)
+    # Normalize Stage (with checklist context for SS railing stage mapping)
+    checklist_cols = ["Eqc Type", "EQC Type", "Checklist", "Checklist Name"]
+    present_checklist_cols = [c for c in checklist_cols if c in df.columns]
+    if present_checklist_cols:
+        def _normalize_stage_row(row: pd.Series) -> str:
+            checklist_name = ""
+            for c in present_checklist_cols:
+                value = str(row.get(c, "") or "").strip()
+                if value:
+                    checklist_name = value
+                    break
+            return normalize_stage(row.get("Stage", ""), checklist_name)
+
+        df["Stage_Norm"] = df.apply(_normalize_stage_row, axis=1)
+    else:
+        df["Stage_Norm"] = df.get("Stage", "").apply(normalize_stage)
     # Stage order
     stage_order = ["Pre", "During", "Post", "Reinforcement", "Shuttering", "Other"]
     df["Stage_Norm"] = pd.Categorical(df["Stage_Norm"], categories=stage_order, ordered=True)
@@ -660,7 +723,6 @@ import glob
 for old_csv in glob.glob("*-Cumulative-digiQC-report_EQC_*.csv"):
     try:
         os.remove(old_csv)
-        print(f"  Removed: {old_csv}")
     except Exception as e:
         print(f"  Warning: Could not remove {old_csv}: {e}")
 

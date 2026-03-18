@@ -74,7 +74,21 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
     df = _drop_demo_rows(df)
     # Normalize stage (already done in _read_and_clean), but ensure column exists
     if "__Stage" not in df.columns:
-        df["__Stage"] = df.get("Stage", "").map(EQC.normalize_stage)
+        checklist_cols = ["Eqc Type", "EQC Type", "Checklist", "Checklist Name", "__Checklist"]
+        present_checklist_cols = [c for c in checklist_cols if c in df.columns]
+        if present_checklist_cols and "Stage" in df.columns:
+            def _normalize_stage_row(row: pd.Series) -> str:
+                checklist_name = ""
+                for c in present_checklist_cols:
+                    value = str(row.get(c, "") or "").strip()
+                    if value:
+                        checklist_name = value
+                        break
+                return EQC.normalize_stage(row.get("Stage", ""), checklist_name)
+
+            df["__Stage"] = df.apply(_normalize_stage_row, axis=1)
+        else:
+            df["__Stage"] = df.get("Stage", "").map(EQC.normalize_stage)
     # Parse dates for today split
     dates = df.get("Date").astype(str).map(EQC._parse_date_safe) if "Date" in df.columns else pd.Series([None] * len(df), index=df.index)
 
@@ -169,17 +183,12 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
         """
         if sub_df is None or sub_df.empty:
             return {"Pre": 0, "During": 0, "Post": 0}
-        s = sub_df.get("Stage", "").astype(str).str.lower()
-        pre = s.str.contains("pre", na=False)
-        during = s.str.contains("during", na=False)
-        post = s.str.contains("post", na=False)
-        reinf = s.str.contains("reinforce", na=False)
-        shut = s.str.contains("shutter", na=False)
-        other = ~(pre | during | post | reinf | shut)
-        total = int(len(s))
-        d_count = int(during.sum())
-        p_count = int(post.sum())
-        o_count = int(other.sum())
+        stages = sub_df["__Stage"].astype(str) if "__Stage" in sub_df.columns else sub_df.get("Stage", "").map(EQC.normalize_stage)
+        vc = stages.value_counts()
+        total = int(len(sub_df))
+        d_count = int(vc.get("During", 0))
+        p_count = int(vc.get("Post", 0))
+        o_count = int(vc.get("Other", 0))
         return {
             "Pre": total,
             "During": d_count + p_count + o_count,

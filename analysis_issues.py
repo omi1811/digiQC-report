@@ -156,11 +156,15 @@ def _count_frame(
 
     Args:
         df          : Rows raised in the time-period (filtered by Raised On Date).
-        parent_df   : Full group (project+category) used to count closed-in-period.
-                      When provided together with close_mask, closed count =
-                      rows in parent_df whose Updated Date matches the period.
-        close_mask  : Boolean Series aligned to parent_df.index — True = Updated
-                      Date falls in the period.  Ignored when parent_df is None.
+                      total and open are derived from these rows.
+        parent_df   : Full group (all rows for this project/category, across all dates).
+                      When provided with close_mask, closed count = rows in parent_df
+                      whose 'Current Status Updated On (Date)' falls in the period
+                      AND whose Current Status is Closed/Responded.
+                      This correctly counts issues raised previously that were
+                      closed/resolved during this period.
+        close_mask  : Boolean Series aligned to parent_df.index — True means
+                      'Current Status Updated On (Date)' falls in the period.
     """
     total = len(df)
     if "Current Status" not in df.columns:
@@ -168,7 +172,7 @@ def _count_frame(
     buckets = df["Current Status"].map(_status_bucket)
     open_cnt = int((buckets == "Open").sum())
     if close_mask is not None and parent_df is not None and "Current Status" in parent_df.columns:
-        # Closed count: items closed IN the period (regardless of when they were raised)
+        # Closed = any issue (raised any time) whose status was updated to Closed in this period
         parent_buckets = parent_df["Current Status"].map(_status_bucket)
         close_mask_aligned = close_mask.reindex(parent_df.index, fill_value=False)
         closed_cnt = int(((parent_buckets == "Closed") & close_mask_aligned).sum())
@@ -197,24 +201,19 @@ def analyze_file(path: str, target: date, external_name: str) -> Dict[str, Dict[
         dates = pd.Series([None] * len(df))
 
     masks = _timeframe_masks(dates, target)
-    # Build close masks using "Current Status Updated On (Date)" for closed-in-period counts
-    if UPDATED_DATE_COL in df.columns:
-        close_dates = df[UPDATED_DATE_COL].map(_parse_date_safe)
-    else:
-        close_dates = pd.Series([None] * len(df), index=df.index)
+    # Build close masks from "Current Status Updated On (Date)" for closed-in-period counts
+    close_dates = df[UPDATED_DATE_COL].map(_parse_date_safe) if UPDATED_DATE_COL in df.columns else pd.Series([None] * len(df), index=df.index)
     close_masks = _timeframe_masks(close_dates, target)
     out: Dict[str, Dict[str, Counts]] = {}
     for category, cat_df in df.groupby("__Category"):
         cat_res: Dict[str, Counts] = {}
         for tf, mask in masks.items():
-            # align mask to the subset index to avoid reindex warnings
             mask_aligned = mask.reindex(cat_df.index, fill_value=False)
-            sub = cat_df[mask_aligned]
             if tf != "all":
                 close_mask_aligned = close_masks[tf].reindex(cat_df.index, fill_value=False)
-                cat_res[tf] = _count_frame(sub, parent_df=cat_df, close_mask=close_mask_aligned)
+                cat_res[tf] = _count_frame(cat_df[mask_aligned], parent_df=cat_df, close_mask=close_mask_aligned)
             else:
-                cat_res[tf] = _count_frame(sub)
+                cat_res[tf] = _count_frame(cat_df[mask_aligned])
         out[category] = cat_res
     # Ensure both categories present even if empty
     for cat in ("External", "Internal"):

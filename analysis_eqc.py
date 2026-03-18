@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 from typing import Dict, List
 from datetime import datetime, date
+import re
 
 import pandas as pd
 
@@ -34,8 +35,56 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def normalize_stage(stage: str) -> str:
+def _is_ss_railing_checklist(name: str) -> bool:
+    s = str(name or "").strip().lower()
+    if not s:
+        return False
+    return bool(re.search(r"\b(?:s\s*s|ss|stainless\s*steel)\s*railing\b", s, re.I))
+
+
+def _normalize_ss_railing_stage(stage: str) -> str:
     s = str(stage or "").strip().lower()
+    if not s:
+        return "Other"
+
+    pre_patterns = [
+        r"\bpre\b",
+        r"\bpre\s*installation\b",
+    ]
+    during_patterns = [
+        r"\bfixing\s*on\s*jamb\s*slab\b",
+        r"\bfixing\s*on\s*upstand\b",
+        r"\bjamb\s*slab\b",
+        r"\bupstand\b",
+        r"\bfixing\b",
+    ]
+    post_patterns = [
+        r"\bpost\b",
+        r"\bpost\s*installation\b",
+        r"\bfinal\b",
+        r"\bhandover\b",
+        r"\bfinishing\b",
+        r"\bglass\s*installation\b",
+        r"\bsilicon\b",
+    ]
+
+    for pat in pre_patterns:
+        if re.search(pat, s, re.I):
+            return "Pre"
+    for pat in during_patterns:
+        if re.search(pat, s, re.I):
+            return "During"
+    for pat in post_patterns:
+        if re.search(pat, s, re.I):
+            return "Post"
+
+    # SS railing naming is inconsistent; default unknown non-empty stages to During.
+    return "During"
+
+
+def normalize_stage(stage: str, checklist_name: str = "") -> str:
+    s = str(stage or "").strip().lower()
+    is_ss_railing = _is_ss_railing_checklist(checklist_name)
     # Single-stage checklists - these should appear in all columns (Pre, During, Post)
     # Check these FIRST before general keywords to avoid miscategorization
     single_stage_patterns = [
@@ -48,6 +97,11 @@ def normalize_stage(stage: str) -> str:
     for pattern in single_stage_patterns:
         if pattern in s:
             return "Other"
+
+    # SS railing has stage labels where "during" may be omitted.
+    # For this checklist family only, treat any non-empty non-Pre/Post stage as During.
+    if is_ss_railing:
+        return _normalize_ss_railing_stage(s)
     
     # Standard mappings - check these after single-stage patterns
     # Pre/Before - check before 'during' or 'post' to handle "Pre Shuttering" correctly
@@ -120,7 +174,21 @@ def _read_and_clean(path: str) -> pd.DataFrame:
             "EQC file missing 'Stage' column required for Pre/During/Post mapping. "
             "First columns: " + sample_cols
         )
-    df["__Stage"] = df["Stage"].map(normalize_stage)
+    checklist_cols = ["Eqc Type", "EQC Type", "Checklist", "Checklist Name", "__Checklist"]
+    present_checklist_cols = [c for c in checklist_cols if c in df.columns]
+    if present_checklist_cols:
+        def _stage_with_context(row: pd.Series) -> str:
+            checklist_name = ""
+            for c in present_checklist_cols:
+                value = str(row.get(c, "") or "").strip()
+                if value:
+                    checklist_name = value
+                    break
+            return normalize_stage(row.get("Stage", ""), checklist_name)
+
+        df["__Stage"] = df.apply(_stage_with_context, axis=1)
+    else:
+        df["__Stage"] = df["Stage"].map(normalize_stage)
     return df
 
 

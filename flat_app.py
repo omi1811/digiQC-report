@@ -132,6 +132,9 @@ def is_aluform_checklist(name: str) -> bool:
     """Check if a checklist is Aluform (floor-level)."""
     import re as _re
     s = (name or "").lower()
+    # Keep Aluform RCC/Internal handover separate from plain Aluform checklists.
+    if "handover" in s:
+        return False
     for _, patterns in ALUFORM_CATEGORIES:
         for pat in patterns:
             try:
@@ -203,7 +206,8 @@ def base_name(n: str) -> str:
         r'electrical\s*work': 'Electrical Works',
         r'false\s*ceiling': 'False Ceiling Work',
         r'trimix': 'Trimix Work',
-        r'aluform.*checklist': 'Aluform Checklist',
+        r'aluform.*rcc.*handover.*checklist': 'Aluform RCC Handover Checklist',
+        r'aluform(?!.*handover).*checklist': 'Aluform Checklist',
         r'fire\s*fighting': 'Fire Fighting Work',
     }
     for pat, name in fixes.items():
@@ -239,15 +243,6 @@ def map_checklist_to_category(name: str) -> Tuple[int, str]:
                     return idx, label
             except Exception:
                 continue
-    # Check Aluform
-    aluform_offset = len(RCC_CATEGORIES)
-    for idx, (label, patterns) in enumerate(ALUFORM_CATEGORIES):
-        for pat in patterns:
-            try:
-                if _re.search(pat, s, _re.I):
-                    return aluform_offset + idx, label
-            except Exception:
-                continue
     # Check Handover
     handover_offset = len(RCC_CATEGORIES) + len(ALUFORM_CATEGORIES)
     for idx, (label, patterns) in enumerate(HANDOVER_CATEGORIES):
@@ -255,6 +250,17 @@ def map_checklist_to_category(name: str) -> Tuple[int, str]:
             try:
                 if _re.search(pat, s, _re.I):
                     return handover_offset + idx, label
+            except Exception:
+                continue
+    # Check Aluform (exclude handover variants)
+    aluform_offset = len(RCC_CATEGORIES)
+    for idx, (label, patterns) in enumerate(ALUFORM_CATEGORIES):
+        for pat in patterns:
+            try:
+                if "handover" in s:
+                    continue
+                if _re.search(pat, s, _re.I):
+                    return aluform_offset + idx, label
             except Exception:
                 continue
     # Check Finishing
@@ -318,7 +324,21 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
     print(f"[DEBUG prepare_frame] After DEMO filter: {len(df)}")
     # Stage normalization & dates
     if "Stage" in df.columns:
-        df["__Stage"] = df["Stage"].map(EQC.normalize_stage)
+        checklist_cols = ["Eqc Type", "EQC Type", "Checklist", "Checklist Name", "__Checklist"]
+        present_checklist_cols = [c for c in checklist_cols if c in df.columns]
+        if present_checklist_cols:
+            def _normalize_stage_row(row: pd.Series) -> str:
+                checklist_name = ""
+                for c in present_checklist_cols:
+                    value = str(row.get(c, "") or "").strip()
+                    if value:
+                        checklist_name = value
+                        break
+                return EQC.normalize_stage(row.get("Stage", ""), checklist_name)
+
+            df["__Stage"] = df.apply(_normalize_stage_row, axis=1)
+        else:
+            df["__Stage"] = df["Stage"].map(EQC.normalize_stage)
     if "Date" in df.columns:
         df["__Date"] = df["Date"].astype(str).map(EQC._parse_date_safe)
     else:
@@ -878,13 +898,10 @@ def flat_report_export():
         checklist_cols = list(dict.fromkeys(tmp["__Checklist"].astype(str).tolist()))
 
         # Build status matrix
-        def status_symbol(status: str) -> str:
-            up = (status or "").strip().upper()
-            if up == "PASSED":
-                return "✓"
-            if "PROGRESS" in up:
-                return "–"
-            return "–" if up else "–"
+        # Completion is based on stage progression, not EQC pass/fail status.
+        def stage_symbol(stage: str) -> str:
+            s = str(stage or "").strip().lower()
+            return "✓" if s == "post" else "–"
 
         grid = []
         for flt in flats:
@@ -899,7 +916,7 @@ def flat_report_export():
                     row[col] = "✗"
                     all_complete = False
                 else:
-                    sym = status_symbol(str(rec.iloc[0].get("Status", "")))
+                    sym = stage_symbol(str(rec.iloc[0].get("__Stage", "")))
                     row[col] = sym
                     if sym != "✓":
                         all_complete = False

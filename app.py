@@ -156,6 +156,9 @@ def is_aluform_checklist(name: str) -> bool:
     """Check if a checklist is Aluform (floor-level)."""
     import re as _re
     s = (name or "").lower()
+    # Keep Aluform RCC/Internal handover separate from plain Aluform checklists.
+    if "handover" in s:
+        return False
     for _, patterns in ALUFORM_CATEGORIES:
         for pat in patterns:
             try:
@@ -365,7 +368,21 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
     if "Stage" not in df.columns:
         # If input is malformed, return empty summary
         return {}
-    df["__Stage"] = df["Stage"].map(EQC.normalize_stage)
+    checklist_cols = ["Eqc Type", "EQC Type", "Checklist", "Checklist Name", "__Checklist"]
+    present_checklist_cols = [c for c in checklist_cols if c in df.columns]
+    if present_checklist_cols:
+        def _normalize_stage_row(row: pd.Series) -> str:
+            checklist_name = ""
+            for c in present_checklist_cols:
+                value = str(row.get(c, "") or "").strip()
+                if value:
+                    checklist_name = value
+                    break
+            return EQC.normalize_stage(row.get("Stage", ""), checklist_name)
+
+        df["__Stage"] = df.apply(_normalize_stage_row, axis=1)
+    else:
+        df["__Stage"] = df["Stage"].map(EQC.normalize_stage)
     dates = df.get("Date", pd.Series([None] * len(df), index=df.index)).astype(str).map(EQC._parse_date_safe)
     # Projects
     df["__ProjectKey"] = df.apply(canonical_project, axis=1)
@@ -399,17 +416,11 @@ def eqc_summaries(df: pd.DataFrame, target: date) -> Dict[str, Dict[str, Dict[st
         """
         if frame is None or frame.empty:
             return {"Pre": 0, "During": 0, "Post": 0}
-        s = frame.get("Stage", pd.Series(["" ] * len(frame), index=frame.index)).astype(str).str.lower()
-        pre = s.str.contains("pre", na=False)
-        during = s.str.contains("during", na=False)
-        post = s.str.contains("post", na=False)
-        reinf = s.str.contains("reinforce", na=False)
-        shut = s.str.contains("shutter", na=False)
-        other = ~(pre | during | post | reinf | shut)
-        total = int(len(s))
-        d_count = int(during.sum())
-        p_count = int(post.sum())
-        o_count = int(other.sum())
+        c = frame.groupby("__Stage", dropna=False)["__Stage"].count()
+        total = int(len(frame))
+        d_count = int(c.get("During", 0))
+        p_count = int(c.get("Post", 0))
+        o_count = int(c.get("Other", 0))
         return {"Pre": total, "During": d_count + p_count + o_count, "Post": p_count + o_count}
 
     out: Dict[str, Dict[str, Dict[str, int]]] = {}
@@ -920,7 +931,21 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
         return df
     # Stage & date
     if "Stage" in df.columns:
-        df["__Stage"] = df["Stage"].map(EQC.normalize_stage)
+        checklist_cols = ["Eqc Type", "EQC Type", "Checklist", "Checklist Name", "__Checklist"]
+        present_checklist_cols = [c for c in checklist_cols if c in df.columns]
+        if present_checklist_cols:
+            def _normalize_stage_row(row: pd.Series) -> str:
+                checklist_name = ""
+                for c in present_checklist_cols:
+                    value = str(row.get(c, "") or "").strip()
+                    if value:
+                        checklist_name = value
+                        break
+                return EQC.normalize_stage(row.get("Stage", ""), checklist_name)
+
+            df["__Stage"] = df.apply(_normalize_stage_row, axis=1)
+        else:
+            df["__Stage"] = df["Stage"].map(EQC.normalize_stage)
     if "Date" in df.columns:
         df["__Date"] = df["Date"].astype(str).map(EQC._parse_date_safe)
     else:
@@ -1636,14 +1661,10 @@ def flat_report_export():
         checklist_cols = list(dict.fromkeys(tmp["__Checklist"].astype(str).tolist()))
 
         # Build status matrix
-        def status_symbol(status: str) -> str:
-            up = (status or "").strip().upper()
-            # Be more lenient with PASSED detection
-            if "PASS" in up and "FAIL" not in up:
-                return "✓"
-            if "PROGRESS" in up or "IN_PROGRESS" in up:
-                return "–"
-            return "–" if up else "–"
+        # Completion is based on stage progression, not EQC pass/fail status.
+        def stage_symbol(stage: str) -> str:
+            s = str(stage or "").strip().lower()
+            return "✓" if s == "post" else "–"
 
         grid = []
         for flt in flats:
@@ -1658,7 +1679,7 @@ def flat_report_export():
                     row[col] = "✗"
                     all_complete = False
                 else:
-                    sym = status_symbol(str(rec.iloc[0].get("Status", "")))
+                    sym = stage_symbol(str(rec.iloc[0].get("__Stage", "")))
                     row[col] = sym
                     if sym != "✓":
                         all_complete = False

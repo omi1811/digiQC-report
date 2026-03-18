@@ -136,35 +136,65 @@ def generate_quality_dashboard(eqc_df: pd.DataFrame, issues_df: pd.DataFrame, ta
         external = proj_issues[proj_issues['__IsExternal']]
         
         def count_observations(df: pd.DataFrame, date_col: str = '__RaisedDate') -> dict:
-            """Count observations for a timeframe."""
-            # Exact status matching as per analysis_issues.py
+            """Count observations for a timeframe.
+
+            - raised / open : filtered by Raised On Date (issues raised in the period).
+            - closed        : filtered by 'Current Status Updated On (Date)' — counts
+                              ALL issues (regardless of when raised) whose status was
+                              updated to Closed/Responded within the period.
+            - cumulative closed: all rows currently in CLOSED/RESPONDED status.
+            """
             open_statuses = {'RAISED', 'REJECTED'}
             closed_statuses = {'CLOSED', 'RESPONDED'}
-            
-            def get_counts(sub_df: pd.DataFrame) -> dict:
+
+            # Parse close-update dates once for this sub-df
+            upd_col = 'Current Status Updated On (Date)'
+            if upd_col in df.columns:
+                close_dates_col = df[upd_col].apply(_parse_date)
+            else:
+                close_dates_col = pd.Series([None] * len(df), index=df.index)
+
+            def _raised_open(sub_df: pd.DataFrame) -> tuple:
+                """Return (raised, open) for rows raised in the period."""
                 if sub_df.empty:
-                    return {'raised': 0, 'open': 0, 'closed': 0}
+                    return 0, 0
                 statuses = sub_df['Current Status'].astype(str).str.upper()
                 open_count = int(statuses.isin(open_statuses).sum())
-                closed_count = int(statuses.isin(closed_statuses).sum())
-                raised_count = open_count + closed_count  # Total raised = open + closed
-                return {'raised': raised_count, 'open': open_count, 'closed': closed_count}
-            
-            # Today
-            today_mask = df[date_col] == target_date if date_col in df.columns else pd.Series(False, index=df.index)
-            today_counts = get_counts(df[today_mask])
-            
-            # This month
-            month_mask = df[date_col].apply(lambda d: d and d.year == target_date.year and d.month == target_date.month if d else False)
-            month_counts = get_counts(df[month_mask])
-            
-            # Cumulative (all-time)
-            cum_counts = get_counts(df)
-            
+                raised_count = len(sub_df)
+                return raised_count, open_count
+
+            def _closed_in_period(period_mask: 'pd.Series') -> int:
+                """Count issues closed (updated to Closed) within the period mask."""
+                statuses = df['Current Status'].astype(str).str.upper()
+                return int((statuses.isin(closed_statuses) & period_mask).sum())
+
+            # Today — raised
+            today_raise_mask = df[date_col] == target_date if date_col in df.columns else pd.Series(False, index=df.index)
+            today_raised, today_open = _raised_open(df[today_raise_mask])
+            # Today — closed (updated today, regardless of when raised)
+            today_close_mask = close_dates_col == target_date
+            today_closed = _closed_in_period(today_close_mask)
+
+            # This month — raised
+            month_raise_mask = df[date_col].apply(lambda d: bool(d and d.year == target_date.year and d.month == target_date.month))
+            month_raised, month_open = _raised_open(df[month_raise_mask])
+            # This month — closed (updated this month)
+            month_close_mask = close_dates_col.apply(lambda d: bool(d and d.year == target_date.year and d.month == target_date.month))
+            month_closed = _closed_in_period(month_close_mask)
+
+            # Cumulative — raised is all rows; closed is current status
+            cum_raised = len(df)
+            if df.empty:
+                cum_open, cum_closed = 0, 0
+            else:
+                statuses = df['Current Status'].astype(str).str.upper()
+                cum_open = int(statuses.isin(open_statuses).sum())
+                cum_closed = int(statuses.isin(closed_statuses).sum())
+
             return {
-                'today': today_counts,
-                'month': month_counts,
-                'cumulative': cum_counts
+                'today': {'raised': today_raised, 'open': today_open, 'closed': today_closed},
+                'month': {'raised': month_raised, 'open': month_open, 'closed': month_closed},
+                'cumulative': {'raised': cum_raised, 'open': cum_open, 'closed': cum_closed},
             }
         
         def count_eqc(df: pd.DataFrame) -> dict:
