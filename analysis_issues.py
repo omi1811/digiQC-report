@@ -29,9 +29,10 @@ from datetime import date, datetime
 from typing import Dict, List
 
 import pandas as pd
+import building_normalizer as bn
 
-OPEN_STATUSES = {"RAISED", "REJECTED"}
-CLOSED_STATUSES = {"CLOSED", "RESPONDED"}
+OPEN_STATUSES = {"RAISED", "REJECTED", "RESPONDED"}
+CLOSED_STATUSES = {"CLOSED"}
 
 
 @dataclass
@@ -63,6 +64,8 @@ def _read_instructions(path: str) -> pd.DataFrame:
                 df = pd.read_csv(path, dtype=str, keep_default_na=False, sep=None, engine=engine)
             else:
                 df = pd.read_csv(path, dtype=str, keep_default_na=False, sep=sep, engine=engine)
+            # Normalize building names
+            df = bn.normalize_dataframe(df)
             return df
         except Exception as e:
             last_err = e

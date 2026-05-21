@@ -26,6 +26,7 @@ from datetime import datetime, date
 import re
 
 import pandas as pd
+import building_normalizer as bn
 
 
 def parse_args(argv: List[str]) -> argparse.Namespace:
@@ -84,7 +85,8 @@ def _normalize_ss_railing_stage(stage: str) -> str:
 
 def normalize_stage(stage: str, checklist_name: str = "") -> str:
     s = str(stage or "").strip().lower()
-    is_ss_railing = _is_ss_railing_checklist(checklist_name)
+    if _is_ss_railing_checklist(checklist_name):
+        return _normalize_ss_railing_stage(s)
     # Single-stage checklists - these should appear in all columns (Pre, During, Post)
     # Check these FIRST before general keywords to avoid miscategorization
     single_stage_patterns = [
@@ -98,35 +100,30 @@ def normalize_stage(stage: str, checklist_name: str = "") -> str:
         if pattern in s:
             return "Other"
 
-    # SS railing has stage labels where "during" may be omitted.
-    # For this checklist family only, treat any non-empty non-Pre/Post stage as During.
-    if is_ss_railing:
-        return _normalize_ss_railing_stage(s)
-    
     # Standard mappings - check these after single-stage patterns
-    # Pre/Before - check before 'during' or 'post' to handle "Pre Shuttering" correctly
+    # Pre/Before variations - check first
     if "pre" in s or "before" in s or "prior" in s:
         return "Pre"
-    # Post/After - check before 'during' to handle "POST FIXING" correctly
+    # Post/After variations - check before 'during' to handle "POST FIXING" correctly
     if "post" in s or "after" in s:
         return "Post"
-    # During/Fixing - check after Pre/Post to avoid conflicts
+    # During/Fixing variations - check after Pre/Post
     # Exclude single-stage patterns that contain "fixing"
     if "during" in s or "internal plumbing" in s or "internal handover" in s:
         return "During"
     # Only categorize as During if "fixing" is part of a multi-stage checklist
     if "fixing" in s and ("pre" in s or "post" in s or "during" in s):
         return "During"
-    # Pour card variations - check for specific positions
+    # Pour card variations
     if "pour card" in s or "pour-card" in s:
-        # This shouldn't be reached if pre/during/post was already detected above
+        # If we got here, no pre/during/post was found, default to During
         return "During"
-    # Reinforcement and Shuttering - only check if not already categorized
+    # Reinforcement variations
     if "reinforce" in s:
-        return "Pre"
+        return "Reinforcement"
+    # Shuttering variations
     if "shutter" in s:
-        return "Pre"
-    # Other stays distinct; single-stage checklists will be added to all columns later
+        return "Shuttering"
     return "Other"
 
 
@@ -189,6 +186,8 @@ def _read_and_clean(path: str) -> pd.DataFrame:
         df["__Stage"] = df.apply(_stage_with_context, axis=1)
     else:
         df["__Stage"] = df["Stage"].map(normalize_stage)
+    # Normalize building names
+    df = bn.normalize_dataframe(df)
     return df
 
 

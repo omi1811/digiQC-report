@@ -1,22 +1,71 @@
 {% extends 'base.html' %}
 {% block title %}Combined Instruction Report{% endblock %}
 {% block content %}
-  <div class="d-flex justify-content-between align-items-center mb-3">
-    <h3 class="mb-0"><i class="bi bi-file-earmark-excel me-2 text-info"></i>Combined Instruction Report</h3>
-    <a href="{{ url_for('reports_page') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Reports</a>
+  <div class="hero mb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <div>
+      <h3 class="mb-1"><i class="bi bi-file-earmark-excel me-2"></i>Combined Instruction Report</h3>
+      <p class="lead mb-0">Session-scoped, secure workflow for instruction logs and photo extraction.</p>
+    </div>
+    <a href="{{ url_for('reports_page') }}" class="btn btn-light btn-sm"><i class="bi bi-arrow-left"></i> Reports</a>
   </div>
-  <div class="card">
-    <div class="card-body">
-  <p>This runs <code>digiqc_Inst/main.py</code> and serves <strong>Activity wise stage wise instructions details &lt;date&gt;.xlsx</strong> (falling back to <code>Combined_Summary.xlsx</code> if the report file isn’t produced).</p>
-      <div class="d-grid gap-2 d-md-flex">
-        <a class="btn btn-info" href="{{ url_for('inst_report_build') }}"><i class="bi bi-gear"></i> Build Combined Report</a>
-  <a class="btn btn-outline-primary{% if not exists.report %} disabled{% endif %}" href="{{ url_for('inst_report_download') }}"><i class="bi bi-download"></i> Download Activity wise report</a>
+
+  <div class="row g-3">
+    <div class="col-12 col-lg-7">
+      <div class="card card-hover h-100">
+        <div class="card-body">
+          <h5 class="card-title mb-2"><i class="bi bi-shield-lock me-2 text-success"></i>Secure extraction flow</h5>
+          <p class="card-text mb-3">
+            This page is aligned with the photo extractor’s temporary-login mode. The user signs in locally,
+            the authenticated browser session is used for the extraction run, and the session data is discarded
+            after completion.
+          </p>
+          <div class="alert alert-warning py-2 mb-3">
+            No password, cookie, or token is stored by the app. The upload here stays in the current session only.
+          </div>
+          <div class="d-grid gap-2 d-md-flex flex-wrap">
+            <a class="btn btn-info" href="{{ url_for('inst_report_build') }}"><i class="bi bi-gear"></i> Build Combined Report</a>
+            <a class="btn btn-outline-primary{% if not exists.report %} disabled{% endif %}" href="{{ url_for('inst_report_download') }}"><i class="bi bi-download"></i> Download Activity wise report</a>
+          </div>
+          <hr>
+          <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle mb-0">
+              <thead class="table-light">
+                <tr>
+                  <th>Raised Photo</th>
+                  <th>Responded Photo</th>
+                  <th>Closure Photo</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Issue Details</td>
+                  <td>Response Details</td>
+                  <td>Closed Details</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
-      <hr>
-      <ul class="list-unstyled small text-muted">
-        <li>Pipeline present: <strong>{{ 'Yes' if exists.main else 'No' }}</strong></li>
-        <li>Report available: <strong>{{ 'Yes' if exists.report else 'No' }}</strong></li>
-      </ul>
+    </div>
+
+    <div class="col-12 col-lg-5">
+      <div class="card card-hover h-100">
+        <div class="card-body">
+          <h5 class="card-title"><i class="bi bi-info-circle me-2 text-primary"></i>Current session</h5>
+          <ul class="list-unstyled small mb-3">
+            <li class="mb-2">Pipeline present: <strong>{{ 'Yes' if exists.main else 'No' }}</strong></li>
+            <li class="mb-2">Report available: <strong>{{ 'Yes' if exists.report else 'No' }}</strong></li>
+            <li class="mb-2">Issues file loaded: <strong>{{ 'Yes' if issues_file else 'No' }}</strong></li>
+            {% if issues_file %}
+            <li class="text-truncate">File: <strong>{{ issues_file }}</strong></li>
+            {% endif %}
+          </ul>
+          <div class="alert alert-info py-2 mb-0">
+            Use the issues upload in the top bar, then run the extractor from the secure local browser session.
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 {% endblock %}

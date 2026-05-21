@@ -13,6 +13,7 @@ import pandas as pd
 
 from project_utils import canonical_project_from_row
 import analysis_eqc as EQC
+import building_normalizer as bn
 from openpyxl import load_workbook
 from openpyxl.styles import Border, Side, Alignment
 
@@ -278,9 +279,21 @@ def map_checklist_to_category(name: str) -> Tuple[int, str]:
 def robust_read_eqc(path: str) -> pd.DataFrame:
     import warnings
     print(f"[DEBUG robust_read_eqc] Reading CSV from: {path}")
+
+    def _looks_like_eqc(df: pd.DataFrame) -> bool:
+        if not isinstance(df, pd.DataFrame):
+            return False
+        if df.shape[1] <= 1:
+            return False
+        colset = {str(c).strip().lower() for c in df.columns}
+        expected = {
+            "date", "project", "eqc", "eqc type", "eqc_type", "eqc stage",
+            "location l0", "location l1", "location l2", "location l3", "status", "url"
+        }
+        return len(colset.intersection(expected)) >= 3
     
     last_err = None
-    for sep in ("\t", ",", None):
+    for sep in (",", "\t", None):
         try:
             # Try with on_bad_lines parameter (pandas >= 1.3.0)
             # Suppress ParserWarnings since we're handling bad lines
@@ -291,19 +304,38 @@ def robust_read_eqc(path: str) -> pd.DataFrame:
                         result = pd.read_csv(path, dtype=str, keep_default_na=False, sep=None, engine="python", on_bad_lines='skip')
                     else:
                         result = pd.read_csv(path, dtype=str, keep_default_na=False, sep=sep, engine="python", on_bad_lines='skip')
-                    print(f"[DEBUG robust_read_eqc] Successfully read {len(result)} rows with sep={repr(sep)}")
-                    return result
+                    if _looks_like_eqc(result):
+                        print(f"[DEBUG robust_read_eqc] Successfully read {len(result)} rows with sep={repr(sep)}")
+                        # Normalize building names
+                        result = bn.normalize_dataframe(result)
+                        return result
+                    print(f"[DEBUG robust_read_eqc] Parsed with sep={repr(sep)} but schema mismatch, trying next...")
                 except TypeError:
                     # Fall back for older pandas versions
                     if sep is None:
                         result = pd.read_csv(path, dtype=str, keep_default_na=False, sep=None, engine="python", error_bad_lines=False, warn_bad_lines=False)
                     else:
                         result = pd.read_csv(path, dtype=str, keep_default_na=False, sep=sep, engine="python", error_bad_lines=False, warn_bad_lines=False)
-                    print(f"[DEBUG robust_read_eqc] Successfully read {len(result)} rows with sep={repr(sep)} (old pandas)")
-                    return result
+                    if _looks_like_eqc(result):
+                        print(f"[DEBUG robust_read_eqc] Successfully read {len(result)} rows with sep={repr(sep)} (old pandas)")
+                        # Normalize building names
+                        result = bn.normalize_dataframe(result)
+                        return result
+                    print(f"[DEBUG robust_read_eqc] Parsed with sep={repr(sep)} (old pandas) but schema mismatch, trying next...")
         except Exception as e:
             last_err = e
             print(f"[DEBUG robust_read_eqc] Failed with sep={repr(sep)}: {e}")
+    # Final fallback: permissive read with latin-1
+    try:
+        result = pd.read_csv(path, dtype=str, keep_default_na=False, encoding='latin-1', on_bad_lines='skip')
+        if _looks_like_eqc(result):
+            print(f"[DEBUG robust_read_eqc] Fallback latin-1 read succeeded with {len(result)} rows")
+            # Normalize building names
+            result = bn.normalize_dataframe(result)
+            return result
+    except Exception as e:
+        last_err = e
+
     raise last_err if last_err else RuntimeError("Failed to read EQC file")
 
 
@@ -345,6 +377,129 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
         df["__Date"] = None
     # Canonical project
     df["__Project"] = df.apply(canonical_project_from_row, axis=1)
+
+    def _clean_loc_value(value: object) -> str:
+        s = str(value or "").strip()
+        if not s:
+            return ""
+        if s.lower() in {"nan", "none", "null", "na", "n/a", "unknown", "unknwn", "-", "--"}:
+            return ""
+        return s
+
+    def _extract_location_from_eqc(eqc_value: object, project_value: object = "") -> Tuple[str, str]:
+        import re as _re
+
+        eqc = _clean_loc_value(eqc_value)
+        project = _clean_loc_value(project_value)
+        if not eqc:
+            return "", ""
+
+        raw_tokens = [_clean_loc_value(t) for t in _re.split(r"[>/|]+", eqc)]
+        tokens = [t for t in raw_tokens if t]
+        if project:
+            project_norm = _re.sub(r"[^a-z0-9]+", "", project.lower())
+            tokens = [
+                t for t in tokens
+                if _re.sub(r"[^a-z0-9]+", "", t.lower()) != project_norm
+            ]
+
+        building = ""
+        floor = ""
+        building_keywords = r"wing|tower|building|block|bldg|blk|buliding|biilding|bellding|bldng"
+        building_patterns = [
+            _re.compile(rf"\b({building_keywords})\b[\s\-]*([A-Za-z0-9]{{1,8}})\b", _re.I),
+            _re.compile(rf"\b([A-Za-z0-9]{{1,8}})\b[\s\-]*({building_keywords})\b", _re.I),
+        ]
+        floor_patterns = [
+            _re.compile(r"\b(ground\s*floor|ground|stilt|terrace|development|podium\s*\d*|parking\s*\d*|lobby|lift\s*room|stair\s*case|shear\s*wall|lower\s*ground|upper\s*ground|mezzanine|basement)\b", _re.I),
+            _re.compile(r"\b(floor|fl|level|lvl)\s*(\d{1,2})\b", _re.I),
+            _re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(floor|fl|level|lvl)\b", _re.I),
+            _re.compile(r"\b(\d{1,2})\s*(?:flor|loor|flr)\b", _re.I),
+        ]
+
+        def _format_floor_token(token: str) -> str:
+            token = _clean_loc_value(token)
+            if not token:
+                return ""
+            special = _re.search(r"\b(ground\s*floor|ground|stilt|terrace|development|podium\s*\d*|parking\s*\d*|lobby|lift\s*room|stair\s*case|shear\s*wall|lower\s*ground|upper\s*ground|mezzanine|basement)\b", token, _re.I)
+            if special:
+                val = " ".join(w.capitalize() for w in special.group(1).split())
+                return "Ground Floor" if val.lower() == "ground" else val
+            m = _re.search(r"\b(floor|fl|level|lvl)\s*(\d{1,2})\b", token, _re.I) or _re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(floor|fl|level|lvl)\b", token, _re.I) or _re.search(r"\b(\d{1,2})\s*(?:flor|loor|flr)\b", token, _re.I)
+            if m:
+                num = next((g for g in m.groups() if g and str(g).isdigit()), m.group(1))
+                return f"Floor {int(num)}"
+            m = _re.search(r"\b(?:flat|shop|unit|apt|apartment|room)\s*([A-Z]?\d{3,4}[A-Z]?)\b", token, _re.I) or _re.fullmatch(r"[A-Z]?\d{3,4}[A-Z]?", token)
+            if m:
+                code = m.group(1) if m.lastindex else m.group(0)
+                digits = "".join(ch for ch in code if ch.isdigit())
+                if len(digits) >= 3:
+                    return f"Floor {int(digits[:-2])}"
+            return ""
+
+        for token in tokens:
+            if not building:
+                for pat in building_patterns:
+                    m = pat.search(token)
+                    if m:
+                        g1, g2 = m.groups()
+                        if g1.lower() in {"wing", "tower", "building", "block", "bldg", "blk", "buliding", "biilding", "bellding", "bldng"}:
+                            kind = g1
+                            ident = g2
+                            kind_label = {"bldg": "Building", "blk": "Block", "buliding": "Building", "biilding": "Building", "bellding": "Building", "bldng": "Building"}.get(kind.lower(), kind.title())
+                            building = f"{kind_label} {str(ident).strip()}"
+                        else:
+                            kind = g2
+                            ident = g1
+                            kind_label = {"bldg": "building", "blk": "block", "buliding": "building", "biilding": "building", "bellding": "building", "bldng": "building"}.get(kind.lower(), kind.lower())
+                            building = f"{str(ident).strip()} {kind_label}"
+                        break
+            if not floor:
+                for pat in floor_patterns:
+                    m = pat.search(token)
+                    if m:
+                        floor = _format_floor_token(m.group(0))
+                        break
+                if not floor:
+                    floor = _format_floor_token(token)
+            if building and floor:
+                break
+
+        return building, floor
+
+    if "EQC" in df.columns:
+        extracted_locations = df.apply(
+            lambda row: pd.Series(
+                _extract_location_from_eqc(row.get("EQC", ""), row.get("__Project", "")),
+                index=["__EQC_L1", "__EQC_L2"],
+            ),
+            axis=1,
+        )
+        df["Location L1"] = (
+            df["Location L1"] if "Location L1" in df.columns else pd.Series("", index=df.index, dtype="object")
+        )
+        df["Location L2"] = (
+            df["Location L2"] if "Location L2" in df.columns else pd.Series("", index=df.index, dtype="object")
+        )
+        l1_blank = df["Location L1"].map(_clean_loc_value).eq("")
+        l2_blank = df["Location L2"].map(_clean_loc_value).eq("")
+        df.loc[l1_blank, "Location L1"] = extracted_locations.loc[l1_blank, "__EQC_L1"]
+        df.loc[l2_blank, "Location L2"] = extracted_locations.loc[l2_blank, "__EQC_L2"]
+
+    mapping_debug = os.environ.get("DIGIQC_MAPPING_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
+    eqc_only_mapping = os.environ.get("DIGIQC_EQC_ONLY_MAPPING", "0").strip().lower() in {"1", "true", "yes", "on"}
+    mapping_stats = {
+        "rows": 0,
+        "b_from_location": 0,
+        "f_from_location": 0,
+        "fl_from_location": 0,
+        "b_from_eqc": 0,
+        "f_from_eqc": 0,
+        "fl_from_eqc": 0,
+        "b_unknown": 0,
+        "f_unknown": 0,
+        "fl_unknown": 0,
+    }
     # Build a mapping of (Project, Building Letter) -> preferred label from CSV (preserve wording like Wing/Tower/Building)
     import re as _re_map
     bldg_pref_map: Dict[Tuple[str, str], str] = {}
@@ -372,29 +527,52 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
     # Infer Building/Floor/Flat: prefer Location L1/L2/L3, but fall back to EQC fields (e.g., Eqc Type) if missing
     def infer_bld_floor_flat(row: pd.Series) -> Tuple[str, str, str]:
         import re as _re
-        b = str(row.get("Location L1", "") or "").strip()
-        f = str(row.get("Location L2", "") or "").strip()
-        fl = str(row.get("Location L3", "") or "").strip()
+        def _clean_loc(value: object) -> str:
+            s = str(value or "").strip()
+            if not s:
+                return ""
+            if s.lower() in {"nan", "none", "null", "na", "n/a", "unknown", "unknwn", "-", "--"}:
+                return ""
+            return s
+
+        b_loc = _clean_loc(row.get("Location L1", ""))
+        f_loc = _clean_loc(row.get("Location L2", ""))
+        fl_loc = _clean_loc(row.get("Location L3", ""))
+
+        if eqc_only_mapping:
+            b = ""
+            f = ""
+            fl = ""
+        else:
+            b = b_loc
+            f = f_loc
+            fl = fl_loc
         # Candidate source strings to search for fallbacks
         sources = []
-        for c in ("EQC", "Eqc", "Eqc Type", "Stage", "Status"):
-            if c in row and str(row[c]).strip():
-                sources.append(str(row[c]))
+        for c in ("EQC", "Eqc", "Eqc Type", "EQC Type", "Stage", "Status", "Location", "Location Variable"):
+            if c in row:
+                sv = _clean_loc(row[c])
+                if sv:
+                    sources.append(sv)
         # Also include any column that looks like EQC path
         for c in row.index:
             sc = str(c).strip().lower()
-            if sc in {"eqc path", "eqc location", "eqc name"} and str(row[c]).strip():
-                sources.append(str(row[c]))
+            if ("eqc" in sc or sc in {"location", "location variable"}):
+                sv = _clean_loc(row[c])
+                if sv:
+                    sources.append(sv)
+        # Preserve order while removing duplicates.
+        sources = list(dict.fromkeys(sources))
         # Tokenize sources for targeted heuristics
         tokens: List[str] = []
         for s in sources:
-            tokens.extend([t.strip() for t in _re.split(r"[>/|,;:\-–—]+", str(s)) if t.strip()])
+            tokens.extend([t.strip() for t in _re.split(r"[>/|,;:\-]+", str(s)) if _clean_loc(t)])
         # Building fallback patterns (A wing, Building A, Tower B, Block C)
         if not b:
             patt_building = [
-                _re.compile(r"\b(wing|tower|building|block)[\s\-]*([A-Za-z0-9])\b", _re.I),
-                _re.compile(r"\b([A-Za-z0-9])[\s\-]*(wing|tower|building|block)\b", _re.I),
-                _re.compile(r"\b(bldg|blk)\.?[\s\-]*([A-Za-z0-9])\b", _re.I),
+                _re.compile(r"\b(wing|tower|building|block|bldg|blk|buliding|biilding|bellding|bldng)[\s\-]*([A-Za-z0-9]{1,8})\b", _re.I),
+                _re.compile(r"\b([A-Za-z0-9]{1,8})[\s\-]*(wing|tower|building|block|bldg|blk|buliding|biilding|bellding|bldng)\b", _re.I),
+                _re.compile(r"\b(bldg|blk)\.?[\s\-]*([A-Za-z0-9]{1,8})\b", _re.I),
                 # do not use single-letter fallback unless no other hint
             ]
             proj = str(row.get("__Project", "") or "").strip()
@@ -407,12 +585,12 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                         # Normalize to 'A wing'
                         if len(m.groups()) == 2:
                             g1, g2 = m.groups()
-                            type_token = g1 if g1.lower() in ("wing","tower","building","block","bldg","blk") else g2
+                            type_token = g1 if g1.lower() in ("wing","tower","building","block","bldg","blk","buliding","biilding","bellding","bldng") else g2
                             letter_token = g2 if type_token == g1 else g1
                             letter_found = str(letter_token).strip().upper()
                             type_found = str(type_token).strip().lower()
                             break
-                if b:
+                if letter_found:
                     break
             if not b and letter_found:
                 # Prefer exact label used elsewhere in this project for this letter
@@ -421,7 +599,7 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                     b = pref
                 elif type_found:
                     # Expand type token to a nice word
-                    type_map = {"bldg": "Building", "blk": "Block"}
+                    type_map = {"bldg": "Building", "blk": "Block", "buliding": "Building", "biilding": "Building", "bellding": "Building", "bldng": "Building"}
                     t = type_map.get(type_found, type_found).title()
                     b = f"{t} {letter_found}"
         # Floor from Location fields first (L0-L4), else fallback
@@ -432,28 +610,28 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                 if not sv:
                     continue
                 # Recognize special non-flat structures
-                if _re.search(r"\bshear\s*wall\b|stair\s*case|lobby|podium|development|terrace|parking", sv, _re.I):
-                    f = sv
+                if _re.search(r"\bshear\s*wall\b|stair\s*case|lobby|podium\s*\d*|development|terrace|parking\s*\d*|lift\s*room|ground\b", sv, _re.I):
+                    f = "Ground Floor" if _re.search(r"^\s*ground\s*$", sv, _re.I) else sv
                     break
-                m = _re.search(r"\b(floor|fl|level)[\s\-]*(\d{1,2})\b", sv, _re.I) or _re.search(r"\b(\d{1,2})[\s\-]*(floor|fl|level)\b", sv, _re.I) or _re.search(r"\b(?:f|fl|lvl|l)[\s\-]*(\d{1,2})\b", sv, _re.I) or _re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor)?\b", sv, _re.I)
+                m = _re.search(r"\b(floor|fl|level)[\s\-]*(\d{1,2})\b", sv, _re.I) or _re.search(r"\b(\d{1,2})[\s\-]*(floor|fl|level|flor|loor|flr)\b", sv, _re.I) or _re.search(r"\b(?:f|fl|lvl|l)[\s\-]*(\d{1,2})\b", sv, _re.I) or _re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor|flor|loor|flr)?\b", sv, _re.I)
                 if m:
-                    num = m.group(m.lastindex or 1)
+                    num = next((g for g in m.groups() if g and str(g).isdigit()), m.group(m.lastindex or 1))
                     f = f"Floor {num}"
                     break
         # Floor fallback patterns (Floor 10, 10th Floor, Level 5) from EQC if still missing
         if not f:
             patt_floor = [
                 _re.compile(r"\b(floor|fl|level)[\s\-]*(\d{1,2})\b", _re.I),
-                _re.compile(r"\b(\d{1,2})[\s\-]*(floor|fl|level)\b", _re.I),
+                _re.compile(r"\b(\d{1,2})[\s\-]*(floor|fl|level|flor|loor|flr)\b", _re.I),
                 _re.compile(r"\b(?:f|fl|lvl|l)[\s\-]*(\d{1,2})\b", _re.I),
-                _re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor)?\b", _re.I),
+                _re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor|flor|loor|flr)?\b", _re.I),
             ]
             for s in sources + tokens:
                 for pat in patt_floor:
                     m = pat.search(s)
                     if m:
                         # pick the last numeric group found
-                        num = m.group(m.lastindex or 1)
+                        num = next((g for g in m.groups() if g and str(g).isdigit()), m.group(m.lastindex or 1))
                         f = f"Floor {num}"
                         break
                 if f:
@@ -462,7 +640,7 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
         if not fl:
             # Require explicit keywords to avoid misreading product codes like "Samshield XL 1500" as a flat
             patt_flat = [
-                _re.compile(r"\b(flat|unit|apt|apartment|shop)[\s\-]*([A-Z]?\d{1,4}[A-Z]?)\b", _re.I),
+                _re.compile(r"\b(flat|unit|apt|apartment|shop)\s*(?:no\.?)?[\s\-]*([A-Z]?\d{1,4}[A-Z]?)\b", _re.I),
                 _re.compile(r"\b(room)[\s\-]*(\d{1,4}[A-Z]?)\b", _re.I),
             ]
             for s in sources + tokens:
@@ -486,10 +664,10 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
         # Standardize labels
         def _std_building(x: str) -> str:
             # Preserve CSV wording exactly if it came from Location L1
-            return (x or "").strip()
+            return _clean_loc(x)
 
         def _std_floor(x: str) -> str:
-            s = (x or "").strip()
+            s = _clean_loc(x)
             if not s:
                 return ""
             m = _re.search(r"(\d{1,2})", s)
@@ -498,7 +676,7 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
             return s
 
         def _std_flat(x: str) -> str:
-            s = (x or "").strip()
+            s = _clean_loc(x)
             if not s:
                 return ""
             if _re.search(r"^flat\s+", s, _re.I):
@@ -515,12 +693,48 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                 return f"{t} {core}"
             return s
 
-        return _std_building(b), _std_floor(f), _std_flat(fl)
+        b_final = _std_building(b)
+        f_final = _std_floor(f)
+        fl_final = _std_flat(fl)
 
-    bff = df.apply(infer_bld_floor_flat, axis=1, result_type="expand")
-    df["__Building"] = bff[0].astype(str)
-    df["__Floor"] = bff[1].astype(str)
-    df["__Flat"] = bff[2].astype(str)
+        mapping_stats["rows"] += 1
+        if (not eqc_only_mapping) and b_loc:
+            mapping_stats["b_from_location"] += 1
+        elif b_final:
+            mapping_stats["b_from_eqc"] += 1
+        else:
+            mapping_stats["b_unknown"] += 1
+
+        if (not eqc_only_mapping) and f_loc:
+            mapping_stats["f_from_location"] += 1
+        elif f_final:
+            mapping_stats["f_from_eqc"] += 1
+        else:
+            mapping_stats["f_unknown"] += 1
+
+        if (not eqc_only_mapping) and fl_loc:
+            mapping_stats["fl_from_location"] += 1
+        elif fl_final:
+            mapping_stats["fl_from_eqc"] += 1
+        else:
+            mapping_stats["fl_unknown"] += 1
+
+        return b_final, f_final, fl_final
+
+    if len(df) > 0:
+        bff = df.apply(infer_bld_floor_flat, axis=1, result_type="expand")
+        if isinstance(bff, pd.DataFrame) and len(bff.columns) >= 3:
+            df["__Building"] = bff[0].astype(str)
+            df["__Floor"] = bff[1].astype(str)
+            df["__Flat"] = bff[2].astype(str)
+        else:
+            df["__Building"] = ""
+            df["__Floor"] = ""
+            df["__Flat"] = ""
+    else:
+        df["__Building"] = ""
+        df["__Floor"] = ""
+        df["__Flat"] = ""
     
     print(f"[DEBUG prepare_frame] Unique buildings extracted: {sorted(df['__Building'].unique().tolist()[:10])}")
     print(f"[DEBUG prepare_frame] Unique floors extracted: {sorted(df['__Floor'].unique().tolist()[:10])}")
@@ -539,7 +753,12 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
         return ""
     df["__Pour"] = df.apply(extract_pour, axis=1)
     # Checklist name lives in 'Eqc Type' in our extracts
-    df["__Checklist"] = df.get("Eqc Type", "").astype(str)
+    if "Eqc Type" in df.columns:
+        df["__Checklist"] = df["Eqc Type"].astype(str)
+    elif "EQC Type" in df.columns:
+        df["__Checklist"] = df["EQC Type"].astype(str)
+    else:
+        df["__Checklist"] = ""
     # Optional link
     if "URL" in df.columns:
         df["__URL"] = df["URL"].astype(str)
@@ -548,6 +767,23 @@ def prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
     
     print(f"[DEBUG prepare_frame] Final output rows: {len(df)}")
     print(f"[DEBUG prepare_frame] Sample buildings: {df['__Building'].value_counts().head(5).to_dict()}")
+
+    if mapping_debug:
+        print(
+            "[DEBUG mapping] mode={} rows={} | Building loc/eqc/unknown={}/{}/{} | Floor loc/eqc/unknown={}/{}/{} | Flat loc/eqc/unknown={}/{}/{}".format(
+                "EQC_ONLY" if eqc_only_mapping else "LOCATION_THEN_EQC",
+                mapping_stats["rows"],
+                mapping_stats["b_from_location"],
+                mapping_stats["b_from_eqc"],
+                mapping_stats["b_unknown"],
+                mapping_stats["f_from_location"],
+                mapping_stats["f_from_eqc"],
+                mapping_stats["f_unknown"],
+                mapping_stats["fl_from_location"],
+                mapping_stats["fl_from_eqc"],
+                mapping_stats["fl_unknown"],
+            )
+        )
     
     return df
 
@@ -894,24 +1130,49 @@ def flat_report_export():
         tmp["__DateOrd"] = pd.to_datetime(tmp["__Date"]).fillna(pd.Timestamp.min)
         tmp = tmp.sort_values("__DateOrd").groupby(["__FlatKey", "__ChecklistKey"], as_index=False).tail(1)
 
+        # Use standardized, human-readable checklist display names to avoid
+        # accidental inclusion of flat identifiers in the column headers.
+        tmp["__ChecklistDisplay"] = tmp["__Checklist"].astype(str).map(base_name)
+
         # Determine checklist columns as union across this floor (use readable names)
-        checklist_cols = list(dict.fromkeys(tmp["__Checklist"].astype(str).tolist()))
+        checklist_cols = list(dict.fromkeys(tmp["__ChecklistDisplay"].astype(str).tolist()))
 
         # Build status matrix
         # Completion is based on stage progression, not EQC pass/fail status.
         def stage_symbol(stage: str) -> str:
-            s = str(stage or "").strip().lower()
-            return "✓" if s == "post" else "–"
+            """Determine symbol + stage marker for color-specific flat mapping.
+            Handles variant stage text like "Pre Pour", "During Check", etc.
+            """
+            s = (stage or "").strip().lower()
+            if not s:
+                return "✗"
+
+            if "post" in s:
+                return "✓"
+            if "pre" in s:
+                return "– PRE"
+            if any(token in s for token in ("during", "reinforcement", "reinforc", "shuttering", "shutter")):
+                return "– DURING"
+            # Any non-empty unknown stage is treated as in-progress.
+            return "– DURING"
+
+        # Only include flats that actually have finishing checklist entries
+        local_flats_set = list(dict.fromkeys(tmp["__FlatKey"].astype(str).tolist()))
+        # Preserve natural ordering using outer _flat_key
+        try:
+            local_flats = sorted(local_flats_set, key=_flat_key)
+        except Exception:
+            local_flats = local_flats_set
 
         grid = []
-        for flt in flats:
+        for flt in local_flats:
             row = {"Flat": flt}
             sub = tmp[tmp["__FlatKey"].eq(flt)]
-            present = set(sub["__Checklist"].astype(str))
+            present = set(sub["__ChecklistDisplay"].astype(str))
             any_present = bool(present)
             all_complete = True
             for col in checklist_cols:
-                rec = sub[sub["__Checklist"].astype(str).eq(col)]
+                rec = sub[sub["__ChecklistDisplay"].astype(str).eq(col)]
                 if rec.empty:
                     row[col] = "✗"
                     all_complete = False
@@ -1108,9 +1369,9 @@ def flat_report_export():
         
         # Add legend for symbols
         ws.cell(row=1, column=7, value="Legend:")
-        ws.cell(row=1, column=8, value="✓ = Passed")
-        ws.cell(row=1, column=9, value="– = In Progress")
-        ws.cell(row=1, column=10, value="✗ = Not Done")
+        ws.cell(row=1, column=8, value="– PRE = In Progress (White)")
+        ws.cell(row=1, column=9, value="– DURING = In Progress (Yellow)")
+        ws.cell(row=1, column=10, value="✓ = Completed (Green), ✗ = Not Present (Red)")
         
         # Add data count for validation (number of flats shown)
         ws.cell(row=1, column=12, value="Flats:")
@@ -1123,8 +1384,9 @@ def flat_report_export():
             ws.append(r)
         
         green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        white = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
         yellow = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-        red = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
+        red = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
         
         # Apply coloring only over data rows (excluding header at start_row)
         for row in ws.iter_rows(min_row=start_row+1, min_col=2, max_row=ws.max_row, max_col=ws.max_column):
@@ -1132,10 +1394,15 @@ def flat_report_export():
                 val = str(cell.value or "")
                 if val == "✓":
                     cell.fill = green
-                elif val == "–":
+                elif "PRE" in val.upper():
+                    cell.fill = white
+                    cell.font = Font(color="000000", bold=False)
+                elif "DURING" in val.upper() or val == "–":
                     cell.fill = yellow
+                    cell.font = Font(color="000000", bold=False)
                 elif val == "✗":
                     cell.fill = red
+                    cell.font = Font(color="000000", bold=True)
         
         # Apply borders and wrap text
         thin = Side(border_style="thin", color="000000")

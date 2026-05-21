@@ -12,8 +12,9 @@ import numpy as np
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Tuple
 from collections import defaultdict
+import building_normalizer as bn
 import re
-from project_utils import canonicalize_project_name
+from project_utils import canonical_project_from_row, canonicalize_project_name, normalize_building_names_by_majority
 
 
 class AdvancedAnalytics:
@@ -57,6 +58,7 @@ class AdvancedAnalytics:
             return 'Unknown'
         
         df['__Project'] = df.apply(get_project_name, axis=1)
+        df = normalize_building_names_by_majority(df)
         
         results = {
             'summary': {},
@@ -156,8 +158,8 @@ class AdvancedAnalytics:
             status = str(row.get('Current Status', '')).strip().upper()
             deadline = row['__Deadline']
             
-            # For CLOSED/RESPONDED: overdue if closed/responded AFTER deadline
-            if status in ('CLOSED', 'RESPONDED'):
+            # For CLOSED only: overdue if closed AFTER deadline
+            if status == 'CLOSED':
                 status_date = row.get('__StatusDate')
                 if status_date and pd.notna(status_date):
                     return status_date > deadline
@@ -165,8 +167,8 @@ class AdvancedAnalytics:
                     # If no status date, assume not overdue (closed on time)
                     return False
             
-            # For RAISED/REJECTED or other open statuses: overdue if deadline passed
-            elif status in ('RAISED', 'REJECTED'):
+            # For open statuses: overdue if deadline passed
+            elif status in ('RAISED', 'REJECTED', 'RESPONDED'):
                 return now > deadline
             
             # For any other status, don't count as overdue
@@ -174,7 +176,7 @@ class AdvancedAnalytics:
                 return False
         
         df_with_deadline['__IsOverdue'] = df_with_deadline.apply(is_overdue, axis=1)
-        df_with_deadline['__IsRaised'] = df_with_deadline['Current Status'].astype(str).str.upper().isin(['RAISED', 'REJECTED'])
+        df_with_deadline['__IsRaised'] = df_with_deadline['Current Status'].astype(str).str.upper().isin(['RAISED', 'REJECTED', 'RESPONDED'])
         
         overdue_df = df_with_deadline[df_with_deadline['__IsOverdue']].copy()
         
@@ -185,7 +187,7 @@ class AdvancedAnalytics:
             status = str(row.get('Current Status', '')).strip().upper()
             deadline = row['__Deadline']
             
-            if status in ('CLOSED', 'RESPONDED'):
+            if status == 'CLOSED':
                 status_date = row.get('__StatusDate')
                 if status_date and pd.notna(status_date):
                     return (status_date - deadline).days
@@ -283,6 +285,11 @@ class AdvancedAnalytics:
         """
         df = self._filter_demo(eqc_df.copy())
         
+        # Normalize labels like Building A/Tower A to the project's majority label.
+        if 'Location L1' in df.columns:
+            df['__Project'] = df.apply(canonical_project_from_row, axis=1)
+            df = normalize_building_names_by_majority(df)
+        
         results = {
             'by_project': {}
         }
@@ -362,6 +369,10 @@ class AdvancedAnalytics:
             safety_mask = df['Type L0'].astype(str).str.contains('safety', case=False, na=False)
             df = df[~safety_mask]
         
+        if 'Location L1' in df.columns:
+            df['__Project'] = df.apply(canonical_project_from_row, axis=1)
+            df = normalize_building_names_by_majority(df)
+        
         results = {
             'by_location': [],
             'by_contractor': [],
@@ -386,7 +397,7 @@ class AdvancedAnalytics:
                 if not str(loc).strip():
                     continue
                 count = len(loc_df)
-                closed = len(loc_df[loc_df['Current Status'].astype(str).str.upper().isin({'CLOSED', 'RESPONDED'})])
+                closed = len(loc_df[loc_df['Current Status'].astype(str).str.upper().eq('CLOSED')])
                 closure_rate = round(closed / count * 100, 1) if count > 0 else 0
                 rows.append({
                     'project': str(project).strip(),
@@ -404,7 +415,7 @@ class AdvancedAnalytics:
             
             for team, count in team_counts.items():
                 team_df = df[df['Assigned Team'] == team]
-                closed = len(team_df[team_df['Current Status'].astype(str).str.upper().isin({'CLOSED', 'RESPONDED'})])
+                closed = len(team_df[team_df['Current Status'].astype(str).str.upper().eq('CLOSED')])
                 closure_rate = round(closed / count * 100, 1) if count > 0 else 0
                 
                 results['by_contractor'].append({
@@ -419,7 +430,7 @@ class AdvancedAnalytics:
             
             for typ, count in type_counts.items():
                 type_df = df[df['Type L0'] == typ]
-                closed = len(type_df[type_df['Current Status'].astype(str).str.upper().isin({'CLOSED', 'RESPONDED'})])
+                closed = len(type_df[type_df['Current Status'].astype(str).str.upper().eq('CLOSED')])
                 closure_rate = round(closed / count * 100, 1) if count > 0 else 0
                 
                 results['by_issue_type'].append({
@@ -462,6 +473,8 @@ class AdvancedAnalytics:
         
         eqc['__Project'] = eqc.apply(get_project_name, axis=1)
         issues['__Project'] = issues.apply(get_project_name, axis=1)
+        eqc = normalize_building_names_by_majority(eqc)
+        issues = normalize_building_names_by_majority(issues)
         
         results = {
             'flagged_issues': [],
@@ -493,8 +506,12 @@ class AdvancedAnalytics:
         else:
             return {'error': 'Missing Raised On Date column in Issues data'}
         
+        # Normalize building names
+        eqc_approved = bn.normalize_dataframe(eqc_approved)
+        issues = bn.normalize_dataframe(issues)
+        
         # Filter to only OPEN/UNRESOLVED issues (ignore closed ones)
-        open_statuses = {'RAISED', 'REJECTED'}
+        open_statuses = {'RAISED', 'REJECTED', 'RESPONDED'}
         if 'Current Status' in issues.columns:
             issues = issues[issues['Current Status'].astype(str).str.upper().isin(open_statuses)].copy()
         
@@ -532,7 +549,13 @@ class AdvancedAnalytics:
             eqc_type = str(eqc_row.get('Eqc Type', '')).strip()
             eqc_date = eqc_row['__ApprovalDate']
             
-            if pd.isna(eqc_date) or not eqc_building or not eqc_floor or eqc_project == 'Unknown':
+            if (
+                pd.isna(eqc_date)
+                or not eqc_building
+                or eqc_building.upper() == 'UNKNOWN'
+                or not eqc_floor
+                or eqc_project == 'Unknown'
+            ):
                 continue
             
             # Find matching issues at SAME PROJECT, same location with same/matching type and raised AFTER approval

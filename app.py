@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import os
 import sys
+import re
 import tempfile
 import uuid
 from datetime import date, datetime
@@ -14,8 +15,9 @@ from flask import jsonify
 import pandas as pd
 import analysis_eqc as EQC
 import analysis_issues as ISS
-from project_utils import canonicalize_project_name, canonical_project_from_row
+from project_utils import building_identity, canonicalize_project_name, canonical_project_from_row, normalize_building_names_by_majority
 import subprocess
+import building_normalizer as bn
 from openpyxl import load_workbook
 from openpyxl.styles import Border, Side, Alignment
 
@@ -245,6 +247,8 @@ def read_eqc_robust(fobj: io.BytesIO) -> pd.DataFrame:
             else:
                 fobj.seek(0)
                 df = pd.read_csv(fobj, dtype=str, keep_default_na=False, sep=sep, engine="python")
+            # Normalize building names before returning
+            df = bn.normalize_dataframe(df)
             return df
         except Exception as e:
             last_err = e
@@ -257,7 +261,6 @@ def _apply_borders_wrap_to_wb(wb) -> None:
     """Apply thin borders and wrap text to all cells in all sheets of an openpyxl Workbook."""
     thin = Side(border_style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    align = Alignment(wrap_text=True, vertical="center")
     for ws in wb.worksheets:
         max_row = ws.max_row or 1
         max_col = ws.max_column or 1
@@ -265,7 +268,14 @@ def _apply_borders_wrap_to_wb(wb) -> None:
             for cell in row:
                 try:
                     cell.border = border
-                    cell.alignment = align
+                    cell.alignment = Alignment(
+                        horizontal=cell.alignment.horizontal,
+                        vertical=cell.alignment.vertical or "center",
+                        text_rotation=cell.alignment.textRotation,
+                        wrap_text=True,
+                        shrink_to_fit=cell.alignment.shrinkToFit,
+                        indent=cell.alignment.indent,
+                    )
                 except Exception:
                     # Skip cells that cannot be styled (unlikely)
                     pass
@@ -608,6 +618,342 @@ def reports_page():
     return render_template("reports.html")
 
 
+def _first_existing_column(df: pd.DataFrame, candidates: List[str]) -> str:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return ""
+
+
+def _normalize_issue_text(value: str) -> str:
+    """Normalize free-text issue descriptions for repeat matching."""
+    text = re.sub(r"[^A-Za-z0-9\s]", " ", str(value or "")).lower()
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    stopwords = {
+        "the", "a", "an", "and", "or", "of", "to", "in", "on", "at", "for", "by", "with",
+        "is", "are", "was", "were", "be", "been", "being", "observed", "issue", "issues",
+        "observations", "work", "workmanship", "poor", "balancing", "balanced", "observed",
+    }
+    tokens = [tok for tok in text.split() if tok not in stopwords]
+    tokens = tokens[:12]
+    return " ".join(tokens).strip()
+
+
+def _infer_issue_theme(text: str, type0: str = "", type1: str = "") -> str:
+    """Very small NLP-style bucketizer for issue text."""
+    corpus = f"{type0} {type1} {text}".lower()
+    buckets = [
+        ("Dampness / Waterproofing", ["damp", "waterproof", "seepage", "leak", "moisture"]),
+        ("Cracks / Surface Defects", ["crack", "hair crack", "spalling", "hollow", "void", "patch"]),
+        ("Finish Quality", ["finish", "finishing", "paint", "plaster", "gypsum", "grout", "alignment"]),
+        ("Protection / Safety", ["protection sheet", "safety", "cover", "guard", "barricade"]),
+        ("Supervision / Process", ["supervision", "sequence", "instruction", "non compliance", "compliance"]),
+        ("Materials / Workmanship", ["workmanship", "material", "mix", "joint", "fixing"]),
+    ]
+    for label, keywords in buckets:
+        if any(k in corpus for k in keywords):
+            return label
+    return "Other / Mixed"
+
+
+def _compute_issues_mapping_frames(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Build mapping, matrix, team summary, and repeated issues analysis frames."""
+    open_statuses = {"RAISED", "REJECTED", "RESPONDED"}
+    closed_statuses = {"CLOSED"}
+
+    df = normalize_building_names_by_majority(
+        df.copy(),
+        project_col="__ProjectKey" if "__ProjectKey" in df.columns else "__Project",
+    )
+    status_norm = df["Current Status"].astype(str).str.strip().str.upper()
+    open_df = df[status_norm.isin(open_statuses)].copy()
+
+    if open_df.empty:
+        mapping_df = pd.DataFrame(columns=["Building", "Assigned Team", "RAISED", "REJECTED", "RESPONDED", "Open Total"])
+        matrix_df = pd.DataFrame(columns=["Building"])
+    else:
+        work = pd.DataFrame(
+            {
+                "Building": open_df["Location L1"].astype(str).str.strip().replace("", "UNKNOWN"),
+                "Assigned Team": open_df["Assigned Team"].astype(str).str.strip().replace("", "UNASSIGNED"),
+                "Current Status": open_df["Current Status"].astype(str).str.strip().str.upper(),
+            }
+        )
+        mapping_df = (
+            work.groupby(["Building", "Assigned Team", "Current Status"], dropna=False)
+            .size()
+            .unstack(fill_value=0)
+            .reset_index()
+        )
+        for col in ["RAISED", "REJECTED", "RESPONDED"]:
+            if col not in mapping_df.columns:
+                mapping_df[col] = 0
+        mapping_df["Open Total"] = (
+            mapping_df["RAISED"].astype(int)
+            + mapping_df["REJECTED"].astype(int)
+            + mapping_df["RESPONDED"].astype(int)
+        )
+        mapping_df = mapping_df[["Building", "Assigned Team", "RAISED", "REJECTED", "RESPONDED", "Open Total"]]
+        mapping_df = mapping_df.sort_values(["Building", "Open Total", "Assigned Team"], ascending=[True, False, True])
+
+        matrix_df = (
+            mapping_df.pivot_table(
+                index="Building",
+                columns="Assigned Team",
+                values="Open Total",
+                aggfunc="sum",
+                fill_value=0,
+            )
+            .sort_index()
+            .reset_index()
+        )
+
+    assigned_instr_col = _first_existing_column(
+        df,
+        [
+            "Assigned Instruction",
+            "Assigned Instructions",
+            "Instruction",
+            "Title",
+            "Description",
+            "Recommendation",
+            "Type L1",
+            "Type L0",
+        ],
+    )
+
+    analysis = df.copy()
+    analysis["__Team"] = analysis["Assigned Team"].astype(str).str.strip().replace("", "UNASSIGNED")
+    analysis["__Building"] = analysis["Location L1"].astype(str).str.strip().replace("", "UNKNOWN")
+    analysis["__Status"] = analysis["Current Status"].astype(str).str.strip().str.upper()
+
+    if assigned_instr_col:
+        analysis["__AssignedInstruction"] = analysis[assigned_instr_col].astype(str).str.strip().replace("", "NO_INSTRUCTION")
+    else:
+        analysis["__AssignedInstruction"] = "NO_INSTRUCTION"
+
+    # Signature used to detect repeats (normalized text + issue type + building only)
+    desc_col = _first_existing_column(df, ["Description", "Title", "Observation", "Recommendation"])
+    type0_col = _first_existing_column(df, ["Type L0", "Type", "Category"])
+    type1_col = _first_existing_column(df, ["Type L1", "Sub Type"])
+
+    analysis["__Desc"] = analysis[desc_col].astype(str).str.strip() if desc_col else ""
+    analysis["__Type0"] = analysis[type0_col].astype(str).str.strip() if type0_col else ""
+    analysis["__Type1"] = analysis[type1_col].astype(str).str.strip() if type1_col else ""
+    analysis["__DescNorm"] = analysis["__Desc"].map(_normalize_issue_text)
+    analysis["__Theme"] = [
+        _infer_issue_theme(desc, t0, t1)
+        for desc, t0, t1 in zip(analysis["__DescNorm"], analysis["__Type0"], analysis["__Type1"])
+    ]
+    analysis["__Signature"] = (
+        analysis["__Type0"].str.upper()
+        + " | "
+        + analysis["__Type1"].str.upper()
+        + " | "
+        + analysis["__DescNorm"].str.upper()
+        + " | "
+        + analysis["__Building"].str.upper()
+    )
+
+    grp = analysis.groupby(["__Team", "__AssignedInstruction", "__Signature"], dropna=False)
+    repeated_df = grp.agg(
+        Total_Instances=("__Signature", "size"),
+        Open_Instances=("__Status", lambda s: int(s.isin(open_statuses).sum())),
+        Closed_Instances=("__Status", lambda s: int(s.isin(closed_statuses).sum())),
+        Distinct_Buildings=("__Building", lambda s: int(s.nunique())),
+    ).reset_index()
+    repeated_df["Repeated_Count"] = repeated_df["Total_Instances"].astype(int) - 1
+    repeated_df["Reopen_Risk"] = (
+        (repeated_df["Open_Instances"].astype(int) > 0)
+        & (repeated_df["Closed_Instances"].astype(int) > 0)
+        & (repeated_df["Total_Instances"].astype(int) >= 2)
+    ).map(lambda x: "YES" if x else "NO")
+
+    repeated_df = repeated_df[repeated_df["Total_Instances"].astype(int) >= 2].copy()
+    repeated_df = repeated_df.rename(
+        columns={
+            "__Team": "Assigned Team",
+            "__AssignedInstruction": "Assigned Instruction",
+            "__Signature": "Issue Signature",
+        }
+    )
+    if not repeated_df.empty:
+        theme_lookup = (
+            analysis.groupby(["__Team", "__AssignedInstruction", "__Signature"], dropna=False)["__Theme"]
+            .agg(lambda s: s.mode().iat[0] if not s.mode().empty else "Other / Mixed")
+            .reset_index()
+            .rename(columns={"__Team": "Assigned Team", "__AssignedInstruction": "Assigned Instruction", "__Signature": "Issue Signature", "__Theme": "Issue Theme"})
+        )
+        repeated_df = repeated_df.merge(theme_lookup, on=["Assigned Team", "Assigned Instruction", "Issue Signature"], how="left")
+    else:
+        repeated_df["Issue Theme"] = []
+    repeated_df = repeated_df.sort_values(
+        ["Total_Instances", "Open_Instances", "Assigned Team", "Assigned Instruction"],
+        ascending=[False, False, True, True],
+    )
+
+    team_summary = analysis.groupby("__Team", dropna=False).agg(
+        Total_Assigned_Issues=("__Team", "size"),
+        Open_Issues=("__Status", lambda s: int(s.isin(open_statuses).sum())),
+        Closed_Issues=("__Status", lambda s: int(s.isin(closed_statuses).sum())),
+        Unique_Assigned_Instructions=("__AssignedInstruction", lambda s: int(s.nunique())),
+        Unique_Issue_Signatures=("__Signature", lambda s: int(s.nunique())),
+        Unique_Issue_Themes=("__Theme", lambda s: int(s.nunique())),
+    ).reset_index().rename(columns={"__Team": "Assigned Team"})
+
+    if not repeated_df.empty:
+        rep_cnt = repeated_df.groupby("Assigned Team")["Issue Signature"].count().rename("Repeated_Issue_Signatures")
+        risk_cnt = repeated_df[repeated_df["Reopen_Risk"] == "YES"].groupby("Assigned Team")["Issue Signature"].count().rename("Reopen_Risk_Signatures")
+        team_summary = team_summary.merge(rep_cnt, on="Assigned Team", how="left")
+        team_summary = team_summary.merge(risk_cnt, on="Assigned Team", how="left")
+    else:
+        team_summary["Repeated_Issue_Signatures"] = 0
+        team_summary["Reopen_Risk_Signatures"] = 0
+
+    for c in ["Repeated_Issue_Signatures", "Reopen_Risk_Signatures"]:
+        team_summary[c] = pd.to_numeric(team_summary[c], errors="coerce").fillna(0).astype(int)
+
+    team_summary = team_summary.sort_values(["Open_Issues", "Repeated_Issue_Signatures", "Assigned Team"], ascending=[False, False, True])
+
+    return mapping_df, matrix_df, team_summary, repeated_df
+
+
+@app.get("/issues-open-mapping/export")
+@login_required
+def issues_open_mapping_export():
+    """Export issues detailed mapping by Building and Assigned Team.
+
+    Open issues are rows where Current Status is Raised or Rejected.
+    """
+    path = _resolve_issues_path(request.args.get("path", ""))
+    if not path or not os.path.exists(path):
+        return "Issues file not found. Upload/set an Issues CSV first.", 404
+
+    df = _robust_read_issues_path(path)
+    if df is None or df.empty:
+        return "Issues file is empty or unreadable.", 400
+
+    required = ["Current Status", "Location L1", "Assigned Team"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        return f"Missing required column(s): {', '.join(missing)}", 400
+
+    # Project filtering (same idea as flat-wise/external pages)
+    df = df.copy()
+    try:
+        df["__ProjectKey"] = df.apply(canonical_project_from_row, axis=1)
+    except Exception:
+        df["__ProjectKey"] = df.get("Location L0", "").astype(str)
+
+    sel = (request.args.get("project") or "").strip()
+    if sel:
+        filtered = df[df["__ProjectKey"].astype(str).str.strip().eq(sel)]
+        if filtered.empty:
+            filtered = df[df["__ProjectKey"].astype(str).str.strip().str.lower().eq(sel.lower())]
+        if filtered.empty:
+            filtered = df[df["__ProjectKey"].astype(str).str.strip().str.contains(sel, case=False, na=False)]
+        df = filtered
+
+    mapping_df, matrix_df, team_summary_df, repeated_df = _compute_issues_mapping_frames(df)
+
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        mapping_df.to_excel(writer, sheet_name="Open Issues Mapping", index=False)
+        matrix_df.to_excel(writer, sheet_name="Building vs Team Matrix", index=False)
+        team_summary_df.to_excel(writer, sheet_name="Teams & Instr Analysis", index=False)
+        repeated_df.to_excel(writer, sheet_name="Repeated Issues", index=False)
+    out.seek(0)
+
+    today_str = date.today().strftime("%d-%m-%Y")
+    if sel:
+        sel_safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in sel).strip("_")
+        fname = f"Issues_Detailed_Mapping_{sel_safe}_{today_str}.xlsx"
+    else:
+        fname = f"Issues_Detailed_Mapping_{today_str}.xlsx"
+    return send_file(
+        out,
+        as_attachment=True,
+        download_name=fname,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.get("/issues-open-mapping")
+@login_required
+def issues_open_mapping_page():
+    """Issues detailed mapping page with project dropdown (flat-wise style)."""
+    path = _resolve_issues_path(request.args.get("path", ""))
+    if not path or not os.path.exists(path):
+        return render_template(
+            "issues_open_mapping.html",
+            path="",
+            projects=[],
+            selected_project="",
+            missing_columns=[],
+            total_open=0,
+            repeated_signatures=0,
+            reopen_risk_signatures=0,
+            has_data=False,
+        ), 200
+
+    df = _robust_read_issues_path(path)
+    if df is None or df.empty:
+        return render_template(
+            "issues_open_mapping.html",
+            path=path,
+            projects=[],
+            selected_project="",
+            missing_columns=[],
+            total_open=0,
+            repeated_signatures=0,
+            reopen_risk_signatures=0,
+            has_data=False,
+        ), 200
+
+    required = ["Current Status", "Location L1", "Assigned Team"]
+    missing = [c for c in required if c not in df.columns]
+
+    try:
+        df["__ProjectKey"] = df.apply(canonical_project_from_row, axis=1)
+    except Exception:
+        df["__ProjectKey"] = df.get("Location L0", "").astype(str)
+
+    projects = sorted([p for p in df["__ProjectKey"].astype(str).str.strip().unique() if p])
+    sel = (request.args.get("project") or "").strip()
+    if not sel and projects:
+        sel = projects[0]
+
+    total_open = 0
+    repeated_signatures = 0
+    reopen_risk_signatures = 0
+    has_data = False
+    if not missing:
+        dfx = df
+        if sel:
+            dfx = dfx[dfx["__ProjectKey"].astype(str).str.strip().eq(sel)]
+        status = dfx["Current Status"].astype(str).str.strip().str.upper()
+        total_open = int(status.isin({"RAISED", "REJECTED"}).sum())
+        _mapping_df, _matrix_df, team_summary_df, repeated_df = _compute_issues_mapping_frames(dfx)
+        repeated_signatures = int(len(repeated_df))
+        if not repeated_df.empty and "Reopen_Risk" in repeated_df.columns:
+            reopen_risk_signatures = int((repeated_df["Reopen_Risk"] == "YES").sum())
+        has_data = total_open > 0
+
+    return render_template(
+        "issues_open_mapping.html",
+        path=path,
+        projects=projects,
+        selected_project=sel,
+        missing_columns=missing,
+        total_open=total_open,
+        repeated_signatures=repeated_signatures,
+        reopen_risk_signatures=reopen_risk_signatures,
+        has_data=has_data,
+    )
+
+
 @app.get("/dashboards")
 @login_required
 def dashboards_page():
@@ -913,6 +1259,25 @@ def _robust_read_issues_path(path: str) -> pd.DataFrame:
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
 
+def _resolve_issues_path(preferred: str = "") -> str:
+    """Resolve Issues CSV from explicit input, session, or workspace autodetect."""
+    path = (preferred or "").strip() or _get_session_issues_path() or ""
+    if path and os.path.exists(path):
+        return path
+    candidates: list[str] = []
+    try:
+        for root, _dirs, files in os.walk(os.getcwd()):
+            for f in files:
+                fl = f.lower()
+                if fl.endswith('.csv') and ('instruction' in fl or fl.startswith('csv-instruction-latest-report')):
+                    candidates.append(os.path.join(root, f))
+    except Exception:
+        candidates = []
+    if candidates:
+        return max(candidates, key=lambda p: os.path.getmtime(p))
+    return ""
+
+
 def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
     # Copy & filter DEMO
     if df is None or df.empty:
@@ -952,6 +1317,135 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
         df["__Date"] = None
     # Project key
     df["__Project"] = df.apply(canonical_project_from_row, axis=1)
+    df = normalize_building_names_by_majority(df)
+
+    def _clean_loc_value(value: object) -> str:
+        s = str(value or "").strip()
+        if not s:
+            return ""
+        if s.lower() in {"nan", "none", "null", "na", "n/a", "unknown", "unknwn", "-", "--"}:
+            return ""
+        return s
+
+    def _extract_location_from_eqc(eqc_value: object, project_value: object = "") -> _Tuple[str, str]:
+        import re as _re
+
+        eqc = _clean_loc_value(eqc_value)
+        project = _clean_loc_value(project_value)
+        if not eqc:
+            return "", ""
+
+        raw_tokens = [_clean_loc_value(t) for t in _re.split(r"[>/|]+", eqc)]
+        tokens = [t for t in raw_tokens if t]
+        if project:
+            project_norm = _re.sub(r"[^a-z0-9]+", "", project.lower())
+            tokens = [
+                t for t in tokens
+                if _re.sub(r"[^a-z0-9]+", "", t.lower()) != project_norm
+            ]
+
+        building = ""
+        floor = ""
+        building_keywords = r"wing|tower|building|block|bldg|blk|buliding|biilding|bellding|bldng"
+        building_patterns = [
+            _re.compile(rf"\b({building_keywords})\b[\s\-]*([A-Za-z0-9]{{1,8}})\b", _re.I),
+            _re.compile(rf"\b([A-Za-z0-9]{{1,8}})\b[\s\-]*({building_keywords})\b", _re.I),
+        ]
+        floor_patterns = [
+            _re.compile(r"\b(ground\s*floor|ground|stilt|terrace|development|podium\s*\d*|parking\s*\d*|lobby|lift\s*room|stair\s*case|shear\s*wall|lower\s*ground|upper\s*ground|mezzanine|basement)\b", _re.I),
+            _re.compile(r"\b(floor|fl|level|lvl)\s*(\d{1,2})\b", _re.I),
+            _re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(floor|fl|level|lvl)\b", _re.I),
+            _re.compile(r"\b(\d{1,2})\s*(?:flor|loor|flr)\b", _re.I),
+        ]
+
+        def _format_floor_token(token: str) -> str:
+            token = _clean_loc_value(token)
+            if not token:
+                return ""
+            special = _re.search(r"\b(ground\s*floor|ground|stilt|terrace|development|podium\s*\d*|parking\s*\d*|lobby|lift\s*room|stair\s*case|shear\s*wall|lower\s*ground|upper\s*ground|mezzanine|basement)\b", token, _re.I)
+            if special:
+                val = " ".join(w.capitalize() for w in special.group(1).split())
+                return "Ground Floor" if val.lower() == "ground" else val
+            m = _re.search(r"\b(floor|fl|level|lvl)\s*(\d{1,2})\b", token, _re.I) or _re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(floor|fl|level|lvl)\b", token, _re.I) or _re.search(r"\b(\d{1,2})\s*(?:flor|loor|flr)\b", token, _re.I)
+            if m:
+                num = next((g for g in m.groups() if g and str(g).isdigit()), m.group(1))
+                return f"Floor {int(num)}"
+            m = _re.search(r"\b(?:flat|shop|unit|apt|apartment|room)\s*([A-Z]?\d{3,4}[A-Z]?)\b", token, _re.I) or _re.fullmatch(r"[A-Z]?\d{3,4}[A-Z]?", token)
+            if m:
+                code = m.group(1) if m.lastindex else m.group(0)
+                digits = "".join(ch for ch in code if ch.isdigit())
+                if len(digits) >= 3:
+                    return f"Floor {int(digits[:-2])}"
+            return ""
+
+        for token in tokens:
+            if not building:
+                for pat in building_patterns:
+                    m = pat.search(token)
+                    if m:
+                        g1, g2 = m.groups()
+                        if g1.lower() in {"wing", "tower", "building", "block", "bldg", "blk", "buliding", "biilding", "bellding", "bldng"}:
+                            kind = g1
+                            ident = g2
+                            if not building_identity(f"{kind} {ident}"):
+                                continue
+                            kind_label = {"bldg": "Building", "blk": "Block", "buliding": "Building", "biilding": "Building", "bellding": "Building", "bldng": "Building"}.get(kind.lower(), kind.title())
+                            building = f"{kind_label} {str(ident).strip()}"
+                        else:
+                            kind = g2
+                            ident = g1
+                            if not building_identity(f"{ident} {kind}"):
+                                continue
+                            kind_label = {"bldg": "building", "blk": "block", "buliding": "building", "biilding": "building", "bellding": "building", "bldng": "building"}.get(kind.lower(), kind.lower())
+                            building = f"{str(ident).strip()} {kind_label}"
+                        break
+            if not floor:
+                for pat in floor_patterns:
+                    m = pat.search(token)
+                    if m:
+                        floor = _format_floor_token(m.group(0))
+                        break
+                if not floor:
+                    floor = _format_floor_token(token)
+            if building and floor:
+                break
+
+        return building, floor
+
+    if "EQC" in df.columns:
+        extracted_locations = df.apply(
+            lambda row: pd.Series(
+                _extract_location_from_eqc(row.get("EQC", ""), row.get("__Project", "")),
+                index=["__EQC_L1", "__EQC_L2"],
+            ),
+            axis=1,
+        )
+        df["Location L1"] = (
+            df["Location L1"] if "Location L1" in df.columns else pd.Series("", index=df.index, dtype="object")
+        )
+        df["Location L2"] = (
+            df["Location L2"] if "Location L2" in df.columns else pd.Series("", index=df.index, dtype="object")
+        )
+        l1_blank = df["Location L1"].map(_clean_loc_value).eq("")
+        l2_blank = df["Location L2"].map(_clean_loc_value).eq("")
+        df.loc[l1_blank, "Location L1"] = extracted_locations.loc[l1_blank, "__EQC_L1"]
+        df.loc[l2_blank, "Location L2"] = extracted_locations.loc[l2_blank, "__EQC_L2"]
+        df = normalize_building_names_by_majority(df)
+
+    mapping_debug = os.environ.get("DIGIQC_MAPPING_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
+    eqc_only_mapping = os.environ.get("DIGIQC_EQC_ONLY_MAPPING", "0").strip().lower() in {"1", "true", "yes", "on"}
+    mapping_stats = {
+        "rows": 0,
+        "b_from_location": 0,
+        "f_from_location": 0,
+        "fl_from_location": 0,
+        "b_from_eqc": 0,
+        "f_from_eqc": 0,
+        "fl_from_eqc": 0,
+        "b_unknown": 0,
+        "f_unknown": 0,
+        "fl_unknown": 0,
+    }
 
     # Preferred building label per (Project, Letter)
     import re as _re_map
@@ -977,25 +1471,48 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
 
     def _infer_bff(row: pd.Series) -> _Tuple[str, str, str]:
         import re as _re
-        b = str(row.get("Location L1", "") or "").strip()
-        f = str(row.get("Location L2", "") or "").strip()
-        fl = str(row.get("Location L3", "") or "").strip()
+        def _clean_loc(value: object) -> str:
+            s = str(value or "").strip()
+            if not s:
+                return ""
+            if s.lower() in {"nan", "none", "null", "na", "n/a", "unknown", "unknwn", "-", "--"}:
+                return ""
+            return s
+
+        b_loc = _clean_loc(row.get("Location L1", ""))
+        f_loc = _clean_loc(row.get("Location L2", ""))
+        fl_loc = _clean_loc(row.get("Location L3", ""))
+
+        if eqc_only_mapping:
+            b = ""
+            f = ""
+            fl = ""
+        else:
+            b = b_loc
+            f = f_loc
+            fl = fl_loc
         sources = []
-        for c in ("EQC", "Eqc", "Eqc Type", "Stage", "Status"):
-            if c in row and str(row[c]).strip():
-                sources.append(str(row[c]))
+        for c in ("EQC", "Eqc", "Eqc Type", "EQC Type", "Stage", "Status", "Location", "Location Variable"):
+            if c in row:
+                sv = _clean_loc(row[c])
+                if sv:
+                    sources.append(sv)
         for c in row.index:
             sc = str(c).strip().lower()
-            if sc in {"eqc path", "eqc location", "eqc name"} and str(row[c]).strip():
-                sources.append(str(row[c]))
+            if ("eqc" in sc or sc in {"location", "location variable"}):
+                sv = _clean_loc(row[c])
+                if sv:
+                    sources.append(sv)
+        # Preserve order while removing duplicates.
+        sources = list(dict.fromkeys(sources))
         tokens: _List[str] = []
         for s in sources:
-            tokens.extend([t.strip() for t in _re.split(r"[>/|,;:\-–—]+", str(s)) if t.strip()])
+            tokens.extend([t.strip() for t in _re.split(r"[>/|,;:\-]+", str(s)) if _clean_loc(t)])
         if not b:
             patt_building = [
-                _re.compile(r"\b(wing|tower|building|block)[\s\-]*([A-Za-z0-9])\b", _re.I),
-                _re.compile(r"\b([A-Za-z0-9])[\s\-]*(wing|tower|building|block)\b", _re.I),
-                _re.compile(r"\b(bldg|blk)\.?[\s\-]*([A-Za-z0-9])\b", _re.I),
+                _re.compile(r"\b(wing|tower|building|block|bldg|blk|buliding|biilding|bellding|bldng)[\s\-]*([A-Za-z0-9]{1,8})\b", _re.I),
+                _re.compile(r"\b([A-Za-z0-9]{1,8})[\s\-]*(wing|tower|building|block|bldg|blk|buliding|biilding|bellding|bldng)\b", _re.I),
+                _re.compile(r"\b(bldg|blk)\.?[\s\-]*([A-Za-z0-9]{1,8})\b", _re.I),
             ]
             proj = str(row.get("__Project", "") or "").strip()
             letter_found = None
@@ -1005,19 +1522,21 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                     m = pat.search(s)
                     if m:
                         g1, g2 = m.groups()
-                        type_token = g1 if g1.lower() in ("wing","tower","building","block","bldg","blk") else g2
+                        type_token = g1 if g1.lower() in ("wing","tower","building","block","bldg","blk","buliding","biilding","bellding","bldng") else g2
                         letter_token = g2 if type_token == g1 else g1
+                        if not building_identity(f"{type_token} {letter_token}"):
+                            continue
                         letter_found = str(letter_token).strip().upper()
                         type_found = str(type_token).strip().lower()
                         break
-                if b:
+                if letter_found:
                     break
             if not b and letter_found:
                 pref = bldg_pref_map.get((proj, letter_found))
                 if pref:
                     b = pref
                 elif type_found:
-                    type_map = {"bldg": "Building", "blk": "Block"}
+                    type_map = {"bldg": "Building", "blk": "Block", "buliding": "Building", "biilding": "Building", "bellding": "Building", "bldng": "Building"}
                     t = type_map.get(type_found, type_found).title()
                     b = f"{t} {letter_found}"
         if not f:
@@ -1025,26 +1544,26 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                 sv = str(row.get(loc_field, "") or "").strip()
                 if not sv:
                     continue
-                if _re.search(r"\bshear\s*wall\b|stair\s*case|lobby|podium|development|terrace|parking", sv, _re.I):
-                    f = sv
+                if _re.search(r"\bshear\s*wall\b|stair\s*case|lobby|podium\s*\d*|development|terrace|parking\s*\d*|lift\s*room|ground\b", sv, _re.I):
+                    f = "Ground Floor" if _re.search(r"^\s*ground\s*$", sv, _re.I) else sv
                     break
-                m = _re.search(r"\b(floor|fl|level)[\s\-]*(\d{1,2})\b", sv, _re.I) or _re.search(r"\b(\d{1,2})[\s\-]*(floor|fl|level)\b", sv, _re.I) or _re.search(r"\b(?:f|fl|lvl|l)[\s\-]*(\d{1,2})\b", sv, _re.I) or _re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor)?\b", sv, _re.I)
+                m = _re.search(r"\b(floor|fl|level)[\s\-]*(\d{1,2})\b", sv, _re.I) or _re.search(r"\b(\d{1,2})[\s\-]*(floor|fl|level|flor|loor|flr)\b", sv, _re.I) or _re.search(r"\b(?:f|fl|lvl|l)[\s\-]*(\d{1,2})\b", sv, _re.I) or _re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor|flor|loor|flr)?\b", sv, _re.I)
                 if m:
-                    num = m.group(m.lastindex or 1)
+                    num = next((g for g in m.groups() if g and str(g).isdigit()), m.group(m.lastindex or 1))
                     f = f"Floor {num}"
                     break
         if not f:
             patt_floor = [
                 _re.compile(r"\b(floor|fl|level)[\s\-]*(\d{1,2})\b", _re.I),
-                _re.compile(r"\b(\d{1,2})[\s\-]*(floor|fl|level)\b", _re.I),
+                _re.compile(r"\b(\d{1,2})[\s\-]*(floor|fl|level|flor|loor|flr)\b", _re.I),
                 _re.compile(r"\b(?:f|fl|lvl|l)[\s\-]*(\d{1,2})\b", _re.I),
-                _re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor)?\b", _re.I),
+                _re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:floor|flor|loor|flr)?\b", _re.I),
             ]
             for s in sources + tokens:
                 for pat in patt_floor:
                     m = pat.search(s)
                     if m:
-                        num = m.group(m.lastindex or 1)
+                        num = next((g for g in m.groups() if g and str(g).isdigit()), m.group(m.lastindex or 1))
                         f = f"Floor {num}"
                         break
                 if f:
@@ -1052,7 +1571,7 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
         if not fl:
             # Require an explicit type like Flat/Shop/Unit/Apt/Room to avoid misreading product codes (e.g., "Samshield XL 1500") as flats
             patt_flat = [
-                _re.compile(r"\b(flat|unit|apt|apartment|shop)[\s\-]*([A-Z]?\d{1,4}[A-Z]?)\b", _re.I),
+                _re.compile(r"\b(flat|unit|apt|apartment|shop)\s*(?:no\.?)?[\s\-]*([A-Z]?\d{1,4}[A-Z]?)\b", _re.I),
                 _re.compile(r"\b(room)[\s\-]*(\d{1,4}[A-Z]?)\b", _re.I),
             ]
             for s in sources + tokens:
@@ -1071,7 +1590,7 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                 if fl:
                     break
         def _std_floor(x: str) -> str:
-            s = (x or "").strip()
+            s = _clean_loc(x)
             if not s:
                 return ""
             m = _re.search(r"(\d{1,2})", s)
@@ -1079,7 +1598,7 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                 return f"Floor {m.group(1)}"
             return s
         def _std_flat(x: str) -> str:
-            s = (x or "").strip()
+            s = _clean_loc(x)
             if not s:
                 return ""
             if _re.search(r"^flat\s+", s, _re.I):
@@ -1093,7 +1612,33 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
                 core = _re.sub(r"^([A-Z]?)(0+)(\d)", r"\1\3", m.group(1))
                 return f"{t} {core}"
             return s
-        return (b or "").strip(), _std_floor(f), _std_flat(fl)
+        b_final = _clean_loc(b)
+        f_final = _std_floor(f)
+        fl_final = _std_flat(fl)
+
+        mapping_stats["rows"] += 1
+        if (not eqc_only_mapping) and b_loc:
+            mapping_stats["b_from_location"] += 1
+        elif b_final:
+            mapping_stats["b_from_eqc"] += 1
+        else:
+            mapping_stats["b_unknown"] += 1
+
+        if (not eqc_only_mapping) and f_loc:
+            mapping_stats["f_from_location"] += 1
+        elif f_final:
+            mapping_stats["f_from_eqc"] += 1
+        else:
+            mapping_stats["f_unknown"] += 1
+
+        if (not eqc_only_mapping) and fl_loc:
+            mapping_stats["fl_from_location"] += 1
+        elif fl_final:
+            mapping_stats["fl_from_eqc"] += 1
+        else:
+            mapping_stats["fl_unknown"] += 1
+
+        return b_final, f_final, fl_final
 
     if len(df) > 0:
         try:
@@ -1140,7 +1685,166 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
     
     df["__Checklist"] = df["Eqc Type"].astype(str) if "Eqc Type" in df.columns else ""
     df["__URL"] = df["URL"].astype(str) if "URL" in df.columns else ""
+
+    if mapping_debug:
+        print(
+            "[DEBUG mapping] mode={} rows={} | Building loc/eqc/unknown={}/{}/{} | Floor loc/eqc/unknown={}/{}/{} | Flat loc/eqc/unknown={}/{}/{}".format(
+                "EQC_ONLY" if eqc_only_mapping else "LOCATION_THEN_EQC",
+                mapping_stats["rows"],
+                mapping_stats["b_from_location"],
+                mapping_stats["b_from_eqc"],
+                mapping_stats["b_unknown"],
+                mapping_stats["f_from_location"],
+                mapping_stats["f_from_eqc"],
+                mapping_stats["f_unknown"],
+                mapping_stats["fl_from_location"],
+                mapping_stats["fl_from_eqc"],
+                mapping_stats["fl_unknown"],
+            )
+        )
+
     return df
+
+
+def _norm_key_text(value: str) -> str:
+    s = str(value or "").strip().lower()
+    return re.sub(r"[^a-z0-9]+", "", s)
+
+
+def _norm_display_text(value: str) -> str:
+    s = str(value or "").strip().lower()
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", s)).strip()
+
+
+def _find_best_column(columns: list[str], candidates: list[str]) -> str:
+    if not columns:
+        return ""
+    col_norm = {_norm_key_text(c): c for c in columns}
+    for cand in candidates:
+        key = _norm_key_text(cand)
+        if key in col_norm:
+            return col_norm[key]
+    for cand in candidates:
+        key = _norm_key_text(cand)
+        for c in columns:
+            c_key = _norm_key_text(c)
+            if key and (key in c_key or c_key in key):
+                return c
+    return ""
+
+
+def _status_bucket(value: str) -> str:
+    s = str(value or "").strip().lower()
+    if not s:
+        return "UNKNOWN"
+    if any(k in s for k in ["pass", "complete", "completed", "done", "post", "approved", "\u2713"]):
+        return "COMPLETED"
+    if any(k in s for k in ["fail", "rejected", "\u2717"]):
+        return "FAILED"
+    if any(k in s for k in ["progress", "pending", "redo", "pre", "during", "-"]):
+        return "IN_PROGRESS"
+    return "OTHER"
+
+
+def _read_onsite_status_lookup(onsite_path: str) -> tuple[dict[tuple[str, str, str], str], str]:
+    """Read on-site status sheet and build lookup by checklist/location/pour keys."""
+    p = (onsite_path or "").strip()
+    if not p:
+        return {}, ""
+    if not os.path.exists(p):
+        return {}, f"On-site status file not found: {p}"
+
+    try:
+        if p.lower().endswith((".xlsx", ".xls", ".xlsm")):
+            src = pd.read_excel(p, dtype=str)
+        else:
+            src = pd.read_csv(p, dtype=str, keep_default_na=False)
+    except Exception as e:
+        return {}, f"Could not read on-site status file '{p}': {e}"
+
+    if src is None or src.empty:
+        return {}, f"On-site status file is empty: {p}"
+
+    src.columns = [str(c).strip() for c in src.columns]
+    checklist_col = _find_best_column(list(src.columns), [
+        "Checklist", "Checklist Name", "Eqc Type", "EQC Type", "EQC Checklist",
+    ])
+    onsite_col = _find_best_column(list(src.columns), [
+        "On-site status", "Onsite status", "Current Status", "Status",
+    ])
+    location_col = _find_best_column(list(src.columns), [
+        "Location", "Location / Reference", "Flat", "Unit", "Reference",
+    ])
+    pour_col = _find_best_column(list(src.columns), ["Pour", "Pour No", "Pour Number"])
+
+    if not checklist_col or not onsite_col:
+        return {}, (
+            "On-site status file is missing required columns. "
+            "Expected checklist/status columns like 'Checklist' and 'On-site status'."
+        )
+
+    lookup: dict[tuple[str, str, str], str] = {}
+    for _, row in src.iterrows():
+        cl_raw = str(row.get(checklist_col, "") or "").strip()
+        if not cl_raw:
+            continue
+        cl = _norm_display_text(base_name(cl_raw))
+        loc = _norm_display_text(row.get(location_col, "")) if location_col else ""
+        pour = _norm_display_text(row.get(pour_col, "")) if pour_col else ""
+        st = str(row.get(onsite_col, "") or "").strip()
+        if not st:
+            continue
+
+        keys = [
+            (cl, loc, pour),
+            (cl, loc, ""),
+            (cl, "", pour),
+            (cl, "", ""),
+        ]
+        for k in keys:
+            if k not in lookup:
+                lookup[k] = st
+
+    if not lookup:
+        return {}, "No usable checklist/status rows found in on-site status sheet."
+    return lookup, ""
+
+
+def _attach_digiqc_status_from_lookup(df_status: pd.DataFrame, lookup: dict[tuple[str, str, str], str]) -> pd.DataFrame:
+    """Add On-site Status and DigiQC Status comparison columns."""
+    if df_status is None or df_status.empty:
+        return df_status
+
+    out = df_status.copy()
+    onsite_values: list[str] = []
+    match_values: list[str] = []
+
+    for _, row in out.iterrows():
+        cl = _norm_display_text(row.get("Checklist", ""))
+        loc = _norm_display_text(row.get("Location", ""))
+        pour = _norm_display_text(row.get("Pour", ""))
+
+        onsite = ""
+        for key in [(cl, loc, pour), (cl, loc, ""), (cl, "", pour), (cl, "", "")]:
+            onsite = lookup.get(key, "")
+            if onsite:
+                break
+
+        digiqc = str(row.get("Status", "") or "").strip()
+        if not onsite:
+            match_val = "Not Found"
+        elif _status_bucket(onsite) == _status_bucket(digiqc):
+            match_val = "Match"
+        else:
+            match_val = "Mismatch"
+
+        onsite_values.append(onsite if onsite else "Not Found")
+        match_values.append(match_val)
+
+    out["On-site Status"] = onsite_values
+    out["DigiQC Status"] = out.get("Status", "").astype(str)
+    out["Status Match"] = match_values
+    return out
 
 
 @app.get("/flat-report")
@@ -1148,6 +1852,7 @@ def _prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
 def flat_report_index():
     # Default to session CSV if present; allow override via ?path=
     path = request.args.get("path") or _get_session_eqc_path() or "Combined_EQC.csv"
+    onsite_path = (request.args.get("onsite_path") or "").strip()
     if not os.path.exists(path):
         return f"EQC file not found: {path}", 404
     
@@ -1164,6 +1869,9 @@ def flat_report_index():
     dfp = df[df["__Project"].astype(str).str.strip().eq(proj)] if proj else df.iloc[0:0]
 
     buildings_all = sorted({(b if b else "UNKNOWN") for b in dfp["__Building"].astype(str).unique()})
+    known_buildings = [b for b in buildings_all if str(b).upper() != "UNKNOWN"]
+    if known_buildings:
+        buildings_all = known_buildings
     default_building = next((b for b in buildings_all if str(b).upper() != "UNKNOWN"), (buildings_all[0] if buildings_all else None))
     building = request.args.get("building") or default_building
 
@@ -1381,6 +2089,7 @@ def flat_report_index():
     return render_template(
         "flat_report.html",
         path=path,
+        onsite_path=onsite_path,
         projects=projects,
         selected_project=proj,
         buildings=buildings_all,
@@ -1401,6 +2110,10 @@ def flat_report_index():
 def flat_report_export():
     # Build an Excel status grid with separate sheets for RCC, Aluform, Handover, and Finishing
     path = request.args.get("path") or _get_session_eqc_path() or "Combined_EQC.csv"
+    onsite_path = (request.args.get("onsite_path") or "").strip()
+    onsite_lookup, onsite_warning = _read_onsite_status_lookup(onsite_path)
+    if onsite_warning:
+        print(f"[WARNING] {onsite_warning}")
     if not os.path.exists(path):
         return f"EQC file not found: {path}", 404
     df = _prepare_frame(_robust_read_eqc_path(path))
@@ -1657,24 +2370,48 @@ def flat_report_export():
         tmp["__DateOrd"] = pd.to_datetime(tmp["__Date"]).fillna(pd.Timestamp.min)
         tmp = tmp.sort_values("__DateOrd").groupby(["__FlatKey", "__ChecklistKey"], as_index=False).tail(1)
 
-        # Determine checklist columns as union across this floor (use readable names)
-        checklist_cols = list(dict.fromkeys(tmp["__Checklist"].astype(str).tolist()))
+        # Determine checklist columns using readable labels.
+        tmp["__ChecklistDisplay"] = tmp["__Checklist"].astype(str).map(base_name)
+        checklist_cols = list(dict.fromkeys(tmp["__ChecklistDisplay"].astype(str).tolist()))
+
+        # Build rows from the finishing data itself so the matrix does not
+        # depend on a separately derived flat list that can miss label variants.
+        local_flats_set = list(dict.fromkeys(tmp["__FlatKey"].astype(str).tolist()))
+        try:
+            local_flats = sorted(local_flats_set, key=_flat_key)
+        except Exception:
+            local_flats = local_flats_set
 
         # Build status matrix
         # Completion is based on stage progression, not EQC pass/fail status.
         def stage_symbol(stage: str) -> str:
+            """Map stage to visual symbol markers for color-aware export.
+            - PRE variants -> – PRE
+            - DURING/REINFORCEMENT/SHUTTERING variants -> – DURING
+            - POST variants -> ✓
+            - Unknown/empty -> ✗
+            """
             s = str(stage or "").strip().lower()
-            return "✓" if s == "post" else "–"
+            if not s:
+                return "✗"
+            if "post" in s:
+                return "✓"
+            if "pre" in s:
+                return "– PRE"
+            if any(token in s for token in ("during", "reinforcement", "reinforc", "shuttering", "shutter")):
+                return "– DURING"
+            # Any non-empty unknown stage is treated as in-progress.
+            return "– DURING"
 
         grid = []
-        for flt in flats:
+        for flt in local_flats:
             row = {"Flat": flt}
             sub = tmp[tmp["__FlatKey"].eq(flt)]
-            present = set(sub["__Checklist"].astype(str))
+            present = set(sub["__ChecklistDisplay"].astype(str))
             any_present = bool(present)
             all_complete = True
             for col in checklist_cols:
-                rec =sub[sub["__Checklist"].astype(str).eq(col)]
+                rec = sub[sub["__ChecklistDisplay"].astype(str).eq(col)]
                 if rec.empty:
                     row[col] = "✗"
                     all_complete = False
@@ -1753,6 +2490,8 @@ def flat_report_export():
     # Build status DataFrames for each category
     # Structural (RCC, Aluform, Handover combined) - floor-level (not flat-wise)
     structural_df = build_floor_status_sheet(structural_data)
+    if onsite_lookup:
+        structural_df = _attach_digiqc_status_from_lookup(structural_df, onsite_lookup)
     # Finishing is flat-wise
     finishing_df = build_status_sheet(finishing_data)
     
@@ -1760,6 +2499,19 @@ def flat_report_export():
     structural_output_count = len(structural_df)
     finishing_output_count = len(finishing_df)
     total_output_rows = structural_output_count + finishing_output_count
+    
+    # Verify flat count match
+    print(f"\n[FLAT-WISE EXPORT DEBUG]")
+    print(f"  Total flats available (from dff): {len(flats)}")
+    print(f"  Finishing matrix rows: {len(finishing_df)}")
+    if len(finishing_df) != len(flats) and not finishing_df.empty:
+        print(f"  ⚠ FLAT COUNT MISMATCH: Expected {len(flats)} rows, got {len(finishing_df)}")
+        finishing_flat_values = finishing_df["Flat"].astype(str).tolist() if "Flat" in finishing_df.columns else []
+        missing_flats = set(flats) - set(finishing_flat_values)
+        if missing_flats:
+            print(f"    Missing flats: {sorted(missing_flats)[:10]}")
+    elif len(finishing_df) == len(flats) and not finishing_df.empty:
+        print(f"  ✓ Finishing matrix matches flat count")
     
     # Count unique finishing checklist types (columns in matrix)
     finishing_checklist_types = 0
@@ -1806,6 +2558,10 @@ def flat_report_export():
     summary_ws.cell(row=5, column=2, value=(floor or 'ALL'))
     summary_ws.cell(row=6, column=1, value="Export Date:")
     summary_ws.cell(row=6, column=2, value=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    summary_ws.cell(row=7, column=1, value="On-site Status File:")
+    summary_ws.cell(row=7, column=2, value=(onsite_path if onsite_path else "Not provided"))
+    if onsite_warning:
+        summary_ws.cell(row=7, column=2, value=f"Warning: {onsite_warning}")
     
     summary_ws.cell(row=8, column=1, value="Data Validation:")
     summary_ws.cell(row=8, column=1).font = Font(bold=True)
@@ -1967,9 +2723,9 @@ def flat_report_export():
         
         # Add legend for symbols
         ws.cell(row=1, column=7, value="Legend:")
-        ws.cell(row=1, column=8, value="✓ = Passed")
-        ws.cell(row=1, column=9, value="– = In Progress")
-        ws.cell(row=1, column=10, value="✗ = Not Done")
+        ws.cell(row=1, column=8, value="– PRE = In Progress (White)")
+        ws.cell(row=1, column=9, value="– DURING = In Progress (Yellow)")
+        ws.cell(row=1, column=10, value="✓ = Completed (Green), ✗ = Not Present (Red)")
         
         # Add data count for validation (number of flats shown)
         ws.cell(row=1, column=12, value="Flats:")
@@ -1982,8 +2738,9 @@ def flat_report_export():
             ws.append(r)
         
         green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        white = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
         yellow = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-        red = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
+        red = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
         
         # Apply coloring only over data rows (excluding header at start_row)
         for row in ws.iter_rows(min_row=start_row+1, min_col=2, max_row=ws.max_row, max_col=ws.max_column):
@@ -1991,10 +2748,16 @@ def flat_report_export():
                 val = str(cell.value or "")
                 if val == "✓":
                     cell.fill = green
-                elif val == "–":
+                    cell.font = Font(color="000000", bold=False)
+                elif "PRE" in val.upper():
+                    cell.fill = white
+                    cell.font = Font(color="000000", bold=False)
+                elif "DURING" in val.upper() or val == "–":
                     cell.fill = yellow
+                    cell.font = Font(color="000000", bold=False)
                 elif val == "✗":
                     cell.fill = red
+                    cell.font = Font(color="000000", bold=True)
         
         # Apply borders and wrap text
         thin = Side(border_style="thin", color="000000")
@@ -2042,6 +2805,10 @@ def flat_report_export():
 def flat_report_export_project():
     """Export flat-wise report for ALL buildings in the selected project"""
     path = request.args.get("path") or _get_session_eqc_path() or "Combined_EQC.csv"
+    onsite_path = (request.args.get("onsite_path") or "").strip()
+    onsite_lookup, onsite_warning = _read_onsite_status_lookup(onsite_path)
+    if onsite_warning:
+        print(f"[WARNING] {onsite_warning}")
     if not os.path.exists(path):
         return f"EQC file not found: {path}", 404
     df = _prepare_frame(_robust_read_eqc_path(path))
@@ -2085,6 +2852,10 @@ def flat_report_export_project():
     summary_ws.cell(row=4, column=2, value=len(all_buildings))
     summary_ws.cell(row=5, column=1, value="Export Date:")
     summary_ws.cell(row=5, column=2, value=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    summary_ws.cell(row=6, column=1, value="On-site Status File:")
+    summary_ws.cell(row=6, column=2, value=(onsite_path if onsite_path else "Not provided"))
+    if onsite_warning:
+        summary_ws.cell(row=6, column=2, value=f"Warning: {onsite_warning}")
     
     summary_ws.cell(row=7, column=1, value="Buildings Included:")
     summary_ws.cell(row=7, column=1).font = Font(bold=True)
@@ -2095,7 +2866,7 @@ def flat_report_export_project():
     # Apply borders to summary
     thin = Side(border_style="thin", color="000000")
     border_style = Border(left=thin, right=thin, top=thin, bottom=thin)
-    for row in summary_ws.iter_rows(min_row=1, max_row=7+len(all_buildings), min_col=1, max_col=2):
+    for row in summary_ws.iter_rows(min_row=1, max_row=8+len(all_buildings), min_col=1, max_col=2):
         for cell in row:
             cell.border = border_style
     
@@ -2193,45 +2964,82 @@ def flat_report_export_project():
     def build_flat_status_matrix_for_building(tmp_data: pd.DataFrame, building_flats: list) -> pd.DataFrame:
         """Build status matrix for flat-level checklists (Finishing)."""
         if tmp_data.empty:
+            print(f"[DEBUG] build_flat_status_matrix_for_building: No finishing data for building, but building_flats list has {len(building_flats)} flats")
             return pd.DataFrame()
-        
+
         tmp = tmp_data.copy()
         tmp["__ChecklistKey"] = tmp["__Checklist"].astype(str).str.strip().str.lower()
         tmp["__FlatKey"] = tmp["__Flat"].astype(str).fillna("").replace("", "UNKNOWN")
         tmp["__DateOrd"] = pd.to_datetime(tmp["__Date"]).fillna(pd.Timestamp.min)
         tmp = tmp.sort_values("__DateOrd").groupby(["__FlatKey", "__ChecklistKey"], as_index=False).tail(1)
 
-        # Debug: Check status values
-        if "Status" in tmp.columns:
-            status_values = tmp["Status"].value_counts()
-            print(f"[DEBUG] Status values in finishing data: {status_values.to_dict()}")
+        # Debug: Check stage values
+        if "__Stage" in tmp.columns:
+            stage_values = tmp["__Stage"].value_counts()
+            print(f"[DEBUG] Stage values in finishing data: {stage_values.to_dict()}")
 
-        # Determine checklist columns
-        checklist_cols = list(dict.fromkeys(tmp["__Checklist"].astype(str).tolist()))
+        # Determine checklist columns using readable display names.
+        tmp["__ChecklistDisplay"] = tmp["__Checklist"].astype(str).map(base_name)
+        checklist_cols = list(dict.fromkeys(tmp["__ChecklistDisplay"].astype(str).tolist()))
 
-        def status_symbol(status: str) -> str:
-            up = (status or "").strip().upper()
-            # Be more lenient with PASSED detection
-            if "PASS" in up and "FAIL" not in up:
+        # Derive the matrix rows from the finishing data itself so the sheet
+        # does not depend on a separately derived flat list that can drift.
+        local_flats_set = list(dict.fromkeys(tmp["__FlatKey"].astype(str).tolist()))
+        try:
+            local_flats = sorted(local_flats_set, key=_flat_key)
+        except Exception:
+            local_flats = local_flats_set
+        
+        # DEBUG: Check flat matching between building_flats and finishing data
+        flats_in_data = set(tmp["__FlatKey"].unique())
+        building_flats_set = set(building_flats)
+        missing_flats = building_flats_set - flats_in_data
+        extra_flats = flats_in_data - building_flats_set
+        
+        if missing_flats or extra_flats:
+            print(f"\n[DEBUG FLAT MISMATCH]")
+            print(f"  Building flats list ({len(building_flats_set)}): {sorted(building_flats_set)[:10]}")
+            print(f"  Flats in finishing data ({len(flats_in_data)}): {sorted(flats_in_data)[:10]}")
+            if missing_flats:
+                print(f"  ⚠ MISSING from data ({len(missing_flats)}): {sorted(missing_flats)[:5]}")
+            if extra_flats:
+                print(f"  ⚠ EXTRA in data ({len(extra_flats)}): {sorted(extra_flats)[:5]}")
+        else:
+            print(f"[DEBUG] Flat matching OK: {len(building_flats_set)} flats in both lists")
+
+        def stage_symbol(stage: str) -> str:
+            """Map stage to visual symbol markers for color-aware export.
+            - PRE variants -> – PRE
+            - DURING/REINFORCEMENT/SHUTTERING variants -> – DURING
+            - POST variants -> ✓
+            - Unknown/empty -> ✗
+            """
+            s = (stage or "").strip().lower()
+            if not s:
+                return "✗"
+            if "post" in s:
                 return "✓"
-            if "PROGRESS" in up or "IN_PROGRESS" in up:
-                return "–"
-            return "–" if up else "–"
+            if "pre" in s:
+                return "– PRE"
+            if any(token in s for token in ("during", "reinforcement", "reinforc", "shuttering", "shutter")):
+                return "– DURING"
+            # Any non-empty unknown stage is treated as in-progress.
+            return "– DURING"
 
         grid = []
-        for flt in building_flats:
+        for flt in local_flats:
             row = {"Flat": flt}
             sub = tmp[tmp["__FlatKey"].eq(flt)]
-            present = set(sub["__Checklist"].astype(str))
+            present = set(sub["__ChecklistDisplay"].astype(str))
             any_present = bool(present)
             all_complete = True
             for col in checklist_cols:
-                rec = sub[sub["__Checklist"].astype(str).eq(col)]
+                rec = sub[sub["__ChecklistDisplay"].astype(str).eq(col)]
                 if rec.empty:
                     row[col] = "✗"
                     all_complete = False
                 else:
-                    sym = status_symbol(str(rec.iloc[0].get("Status", "")))
+                    sym = stage_symbol(str(rec.iloc[0].get("__Stage", "")))
                     row[col] = sym
                     if sym != "✓":
                         all_complete = False
@@ -2308,9 +3116,9 @@ def flat_report_export_project():
         ws.cell(row=1, column=1, value="Building:")
         ws.cell(row=1, column=2, value=building_name)
         ws.cell(row=1, column=7, value="Legend:")
-        ws.cell(row=1, column=8, value="✓ = Passed")
-        ws.cell(row=1, column=9, value="– = In Progress")
-        ws.cell(row=1, column=10, value="✗ = Not Done")
+        ws.cell(row=1, column=8, value="– PRE = In Progress (White)")
+        ws.cell(row=1, column=9, value="– DURING = In Progress (Yellow)")
+        ws.cell(row=1, column=10, value="✓ = Completed (Green), ✗ = Not Present (Red)")
         ws.cell(row=1, column=12, value="Flats:")
         ws.cell(row=1, column=13, value=len(data_df))
         
@@ -2320,18 +3128,25 @@ def flat_report_export_project():
             ws.append(r)
         
         green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        white = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
         yellow = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-        red = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
+        red = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
         
         for row in ws.iter_rows(min_row=start_row+1, min_col=2, max_row=ws.max_row, max_col=ws.max_column):
             for cell in row:
                 val = str(cell.value or "")
                 if val == "✓":
                     cell.fill = green
-                elif val == "–":
+                    cell.font = Font(color="000000", bold=False)
+                elif "PRE" in val.upper():
+                    cell.fill = white
+                    cell.font = Font(color="000000", bold=False)
+                elif "DURING" in val.upper() or val == "–":
                     cell.fill = yellow
+                    cell.font = Font(color="000000", bold=False)
                 elif val == "✗":
                     cell.fill = red
+                    cell.font = Font(color="000000", bold=True)
         
         align = Alignment(wrap_text=True, vertical="center")
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
@@ -2369,9 +3184,29 @@ def flat_report_export_project():
         
         building_flats = sorted(set(building_data["__Flat"].astype(str).fillna("").replace("", "UNKNOWN")), key=_flat_key)
         
+        # DEBUG: Log building flat counts
+        print(f"\n[PROJECT EXPORT DEBUG] Building: {building}")
+        print(f"  Total rows in building_data: {len(building_data)}")
+        print(f"  Structural rows: {len(structural_data)}")
+        print(f"  Finishing rows: {len(finishing_data)}")
+        print(f"  Unique flats from building_data: {len(building_flats)}")
+        if building_flats:
+            print(f"  First 5 flats: {building_flats[:5]}")
+            print(f"  Last 5 flats: {building_flats[-5:]}")
+        
         # Build DataFrames
         structural_df = build_floor_status_sheet_for_building(structural_data)
+        if onsite_lookup:
+            structural_df = _attach_digiqc_status_from_lookup(structural_df, onsite_lookup)
         finishing_df = build_flat_status_matrix_for_building(finishing_data, building_flats)
+        
+        # DEBUG: Verify finishing matrix dimensions
+        print(f"  Structural DF rows: {len(structural_df)}")
+        print(f"  Finishing DF rows: {len(finishing_df)}")
+        if len(finishing_df) != len(building_flats) and not finishing_df.empty:
+            print(f"  ⚠ MISMATCH: Expected {len(building_flats)} flat rows, got {len(finishing_df)}")
+        elif len(finishing_df) == len(building_flats) and not finishing_df.empty:
+            print(f"  ✓ Finishing matrix matches flat count")
         
         # Create sheet names (limit to 31 chars for Excel)
         import re as _re_sheet
@@ -2380,6 +3215,11 @@ def flat_report_export_project():
         # Add sheets for this building
         add_floor_level_sheet_project(wb, f"{building_clean}_Struct"[:31], building, structural_df)
         add_flat_level_sheet_project(wb, f"{building_clean}_Finish"[:31], building, finishing_df)
+    
+    print(f"\n[PROJECT EXPORT SUMMARY]")
+    print(f"  Total buildings processed: {len(all_buildings)}")
+    print(f"  Total sheets created: {len(wb.sheetnames)}")
+    print(f"  (Including Summary sheet + 2 sheets per building)")
     
     # Save to BytesIO
     bio = io.BytesIO()
@@ -2500,6 +3340,7 @@ def issues_building_dashboard():
         # Minimal fallback: project/building from L0/L1
         df = df.copy()
         df["__Project"] = df.get("Location L0", df.get("Project Name", "")).astype(str)
+        df = normalize_building_names_by_majority(df)
         df["__Building"] = df.get("Location L1", "").astype(str)
 
     # Optional date range filter via query params (start/end)
@@ -2923,7 +3764,12 @@ def inst_report_page():
         "main": os.path.exists(p["main"]),
         "report": os.path.exists(p["combined_report"]) or os.path.exists(p["combined_summary_xlsx"]),
     }
-    return render_template("inst_report.html", exists=exists)
+    return render_template(
+        "inst_report.html",
+        exists=exists,
+        issues_file=session.get("issues_file_name", ""),
+        issues_file_path=session.get("issues_file_path", ""),
+    )
 
 
 @app.get("/inst-report/build")
@@ -3166,7 +4012,8 @@ def quality_dashboard_page():
         from quality_dashboard import generate_quality_dashboard
         eqc_df = pd.read_csv(eqc_path)
         issues_df = pd.read_csv(issues_path)
-        data = generate_quality_dashboard(eqc_df, issues_df)
+        ext_name = (session.get("issues_external_name", DEFAULT_ISSUES_EXTERNAL) or "").strip()
+        data = generate_quality_dashboard(eqc_df, issues_df, external_names=ext_name)
         return render_template("quality_dashboard.html",
                              projects=data['projects'],
                              dashboard_date=data['date'],

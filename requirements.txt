@@ -7,3 +7,5 @@ duckduckgo-search
 requests
 sentence-transformers
 scikit-learn
+selenium
+webdriver-manager

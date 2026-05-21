@@ -141,11 +141,11 @@ def generate_quality_dashboard(eqc_df: pd.DataFrame, issues_df: pd.DataFrame, ta
             - raised / open : filtered by Raised On Date (issues raised in the period).
             - closed        : filtered by 'Current Status Updated On (Date)' — counts
                               ALL issues (regardless of when raised) whose status was
-                              updated to Closed/Responded within the period.
-            - cumulative closed: all rows currently in CLOSED/RESPONDED status.
+                              updated to Closed within the period.
+            - cumulative closed: all rows currently in CLOSED status.
             """
-            open_statuses = {'RAISED', 'REJECTED'}
-            closed_statuses = {'CLOSED', 'RESPONDED'}
+            open_statuses = {'RAISED', 'REJECTED', 'RESPONDED'}
+            closed_statuses = {'CLOSED'}
 
             # Parse close-update dates once for this sub-df
             upd_col = 'Current Status Updated On (Date)'

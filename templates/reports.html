@@ -62,11 +62,21 @@
     <div class="col">
       <div class="card h-100 card-hover">
         <div class="card-body">
-          <h5 class="card-title"><i class="bi bi-file-earmark-excel me-2 text-info"></i>Activity wise stage wise instructions details</h5>
-          <p class="card-text">Run the full pipeline and download <code>Activity wise stage wise instructions details &lt;date&gt;.xlsx</code> (or fallback).</p>
+          <h5 class="card-title"><i class="bi bi-diagram-3 me-2 text-warning"></i>Issues Detailed Mapping</h5>
+          <p class="card-text">Open issues mapping by Building and Assigned Team, plus Teams and Assigned Instructions repeat analysis.</p>
           <div class="d-grid gap-2">
-            <a class="btn btn-outline-info" href="{{ url_for('inst_report_page') }}">Open</a>
-            <a class="btn btn-info" href="{{ url_for('inst_report_build') }}">Build Report</a>
+            <a class="btn btn-warning" href="{{ url_for('issues_open_mapping_page') }}">Open</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card h-100 card-hover">
+        <div class="card-body">
+          <h5 class="card-title"><i class="bi bi-shield-lock me-2 text-success"></i>Instruction Photo Extractor</h5>
+          <p class="card-text">Temporary browser login flow for Raised, Responded, and Closure photo extraction without persisting credentials.</p>
+          <div class="d-grid gap-2">
+            <a class="btn btn-success" href="{{ url_for('inst_report_page') }}">Open secure flow</a>
           </div>
         </div>
       </div>

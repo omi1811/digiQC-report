@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block title %}Issues Detailed Mapping{% endblock %}
+{% block content %}
+  <a href="{{ url_for('reports_page') }}" class="btn btn-outline-secondary btn-sm mb-3"><i class="bi bi-arrow-left"></i> Back to Reports</a>
+  <h3 class="mb-1">Issues Detailed Mapping</h3>
+  <p class="text-muted">Open issues where Current Status is Raised/Rejected, grouped by Building (Location L1) and Assigned Team, with Teams and Assigned Instructions repeat analysis.</p>
+
+  <form class="row gy-2 gx-2 align-items-end mb-3" method="get" action="{{ url_for('issues_open_mapping_page') }}">
+    <div class="col-md-5">
+      <label class="form-label">Issues file path</label>
+      <input class="form-control" type="text" name="path" value="{{ path }}">
+    </div>
+    <div class="col-md-5">
+      <label class="form-label">Project</label>
+      <select class="form-select" name="project" onchange="this.form.submit()">
+        {% for p in projects or [] %}
+          <option value="{{ p }}" {% if selected_project==p %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2">
+      <button class="btn btn-primary w-100" type="submit">Update</button>
+    </div>
+  </form>
+
+  {% if missing_columns and missing_columns|length > 0 %}
+    <div class="alert alert-danger">Missing required column(s): {{ missing_columns|join(', ') }}</div>
+  {% endif %}
+
+  {% if projects and selected_project %}
+    <div class="alert alert-info">
+      Selected project: <strong>{{ selected_project }}</strong><br>
+      Open issues found (Raised/Rejected): <strong>{{ total_open }}</strong><br>
+      Repeated issue signatures: <strong>{{ repeated_signatures }}</strong><br>
+      Reopen-risk signatures (closed before but now open): <strong>{{ reopen_risk_signatures }}</strong>
+    </div>
+  {% elif not projects %}
+    <div class="alert alert-warning">No projects detected from the current Issues file.</div>
+  {% endif %}
+
+  <div class="d-grid gap-2 d-md-flex">
+    <a class="btn btn-warning" href="{{ url_for('issues_open_mapping_export', path=path, project=selected_project) }}">Download Excel (Selected Project)</a>
+  </div>
+{% endblock %}

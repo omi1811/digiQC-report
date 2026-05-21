@@ -4,6 +4,7 @@ import pandas as pd
 from typing import Tuple
 import argparse
 from project_utils import canonicalize_project_name, canonical_project_from_row
+import building_normalizer as bn
 
 # --- CLI args / site name ---
 parser = argparse.ArgumentParser(description="EQC report generator (Weekly / Monthly / Cumulative)")
@@ -194,6 +195,8 @@ def read_eqc(path: str) -> pd.DataFrame:
                 df = pd.read_csv(path, dtype=str, keep_default_na=False, sep=None, engine='python')
             else:
                 df = pd.read_csv(path, dtype=str, keep_default_na=False, sep=sep, engine='python')
+            # Normalize building names
+            df = bn.normalize_dataframe(df)
             return df
         except Exception as e:
             last_err = e
@@ -206,7 +209,7 @@ print(f"[DEBUG] Columns: {df.columns.tolist()}")
 
 # Keep only columns we actually use to reduce memory, everything else is dropped early
 needed_cols = [
-    'Date', 'Eqc Type', 'Location L0', 'Location L1', 'Location L2', 'Location Variable', 'Stage', 'Status', 'Project'
+    'Date', 'Eqc Type', 'EQC', 'Location L0', 'Location L1', 'Location L2', 'Location Variable', 'Stage', 'Status', 'Project'
 ]
 existing_needed = [c for c in needed_cols if c in df.columns]
 if existing_needed:
@@ -234,6 +237,113 @@ if len(df) == 0:
 # Canonicalize project key using shared helper with fallbacks
 def _canonical_project_from_row(row: pd.Series) -> str:
     return canonical_project_from_row(row)
+
+
+def _clean_loc_value(value: object) -> str:
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    if s.lower() in {"nan", "none", "null", "na", "n/a", "unknown", "unknwn", "-", "--"}:
+        return ""
+    return s
+
+
+def _extract_location_from_eqc(eqc_value: object, project_value: object = "") -> Tuple[str, str]:
+    eqc = _clean_loc_value(eqc_value)
+    project = _clean_loc_value(project_value)
+    if not eqc:
+        return "", ""
+
+    building_keywords = r"wing|tower|building|block|bldg|blk|buliding|biilding|bellding|bldng"
+    raw_tokens = [_clean_loc_value(t) for t in re.split(r"[>/|]+", eqc)]
+    tokens = [t for t in raw_tokens if t]
+    if project:
+        project_norm = re.sub(r"[^a-z0-9]+", "", project.lower())
+        tokens = [t for t in tokens if re.sub(r"[^a-z0-9]+", "", t.lower()) != project_norm]
+
+    building = ""
+    floor = ""
+    building_patterns = [
+        re.compile(rf"\b({building_keywords})\b[\s\-]*([A-Za-z0-9]{{1,8}})\b", re.I),
+        re.compile(rf"\b([A-Za-z0-9]{{1,8}})\b[\s\-]*({building_keywords})\b", re.I),
+    ]
+
+    def _format_floor_token(token: str) -> str:
+        token = _clean_loc_value(token)
+        if not token:
+            return ""
+        special = re.search(
+            r"\b(ground\s*floor|ground|stilt|terrace|development|podium\s*\d*|parking\s*\d*|lobby|lift\s*room|stair\s*case|shear\s*wall|lower\s*ground|upper\s*ground|mezzanine|basement)\b",
+            token,
+            re.I,
+        )
+        if special:
+            val = " ".join(w.capitalize() for w in special.group(1).split())
+            return "Ground Floor" if val.lower() == "ground" else val
+        m = (
+            re.search(r"\b(floor|fl|level|lvl)\s*(\d{1,2})\b", token, re.I)
+            or re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s*(floor|fl|level|lvl)\b", token, re.I)
+            or re.search(r"\b(\d{1,2})\s*(?:flor|loor|flr)\b", token, re.I)
+        )
+        if m:
+            num = next((g for g in m.groups() if g and str(g).isdigit()), m.group(1))
+            return f"Floor {int(num)}"
+        m = (
+            re.search(r"\b(?:flat|shop|unit|apt|apartment|room)\s*(?:no\.?)?[\s\-]*([A-Z]?\d{3,4}[A-Z]?)\b", token, re.I)
+            or re.fullmatch(r"[A-Z]?\d{3,4}[A-Z]?", token)
+        )
+        if m:
+            code = m.group(1) if getattr(m, "lastindex", None) else m.group(0)
+            digits = "".join(ch for ch in code if ch.isdigit())
+            if len(digits) >= 3:
+                return f"Floor {int(digits[:-2])}"
+        return ""
+
+    for token in tokens:
+        if not building:
+            for pat in building_patterns:
+                m = pat.search(token)
+                if m:
+                    g1, g2 = m.groups()
+                    if g1.lower() in {"wing", "tower", "building", "block", "bldg", "blk", "buliding", "biilding", "bellding", "bldng"}:
+                        kind = g1
+                        ident = g2
+                        kind_label = {"bldg": "Building", "blk": "Block", "buliding": "Building", "biilding": "Building", "bellding": "Building", "bldng": "Building"}.get(kind.lower(), kind.title())
+                        building = f"{kind_label} {str(ident).strip()}"
+                    else:
+                        kind = g2
+                        ident = g1
+                        kind_label = {"bldg": "building", "blk": "block", "buliding": "building", "biilding": "building", "bellding": "building", "bldng": "building"}.get(kind.lower(), kind.lower())
+                        building = f"{str(ident).strip()} {kind_label}"
+                    break
+        if not floor:
+            floor = _format_floor_token(token)
+        if building and floor:
+            break
+
+    return building, floor
+
+
+def _backfill_locations_from_eqc(df_in: pd.DataFrame) -> pd.DataFrame:
+    if df_in is None or df_in.empty or "EQC" not in df_in.columns:
+        return df_in
+    df_out = df_in.copy()
+    extracted = df_out.apply(
+        lambda row: pd.Series(
+            _extract_location_from_eqc(row.get("EQC", ""), row.get("__ProjectKey", row.get("Project", ""))),
+            index=["__EQC_L1", "__EQC_L2"],
+        ),
+        axis=1,
+    )
+    if "Location L1" not in df_out.columns:
+        df_out["Location L1"] = ""
+    if "Location L2" not in df_out.columns:
+        df_out["Location L2"] = ""
+    l1_blank = df_out["Location L1"].map(_clean_loc_value).eq("")
+    l2_blank = df_out["Location L2"].map(_clean_loc_value).eq("")
+    df_out.loc[l1_blank, "Location L1"] = extracted.loc[l1_blank, "__EQC_L1"]
+    df_out.loc[l2_blank, "Location L2"] = extracted.loc[l2_blank, "__EQC_L2"]
+    return df_out
 
 # Derive site name from Location L0 (first non-empty value). Fallback to cwd or 'site'
 loc0 = df.get('Location L0', pd.Series(dtype=str)).astype(str).str.strip()
@@ -684,6 +794,7 @@ mode = args.mode or "weekly"
 # --- Split by project and process ---
 # Build canonical project keys
 df["__ProjectKey"] = df.apply(_canonical_project_from_row, axis=1)
+df = _backfill_locations_from_eqc(df)
 
 # Debug: Show what projects were found
 all_projects = df["__ProjectKey"].astype(str).str.strip().unique()
@@ -732,6 +843,13 @@ generate_for_mode("cumulative")
 try:
     import combine_reports_to_excel as comb
     comb.main()
+    try:
+        from eqc_workbook_polisher import polish_eqc_workbook_in_place
+
+        polish_eqc_workbook_in_place("EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx")
+        print("[OK] Polished EQC cumulative workbook layout")
+    except Exception as polish_err:
+        print(f"Failed to polish combined workbook automatically: {polish_err}")
 except Exception as e:
     print(f"Failed to build combined workbook automatically: {e}. You can run 'python3 combine_reports_to_excel.py' manually.")
 

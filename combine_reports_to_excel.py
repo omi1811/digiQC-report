@@ -2,6 +2,7 @@ import glob
 import os
 import pandas as pd
 from project_utils import canonicalize_project_name
+import building_normalizer as bn
 
 
 def find_mode_files(mode: str):
@@ -57,6 +58,8 @@ def coerce_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
 def load_file(fpath: str) -> pd.DataFrame | None:
     try:
         df = pd.read_csv(fpath, dtype=str)
+        # Normalize building names
+        df = bn.normalize_dataframe(df)
         return coerce_numeric_df(df)
     except Exception as e:
         print(f"Failed to read {fpath}: {e}")

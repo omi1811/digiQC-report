@@ -26,6 +26,7 @@ import pandas as pd
 
 import analysis_eqc as EQC
 from project_utils import canonical_project_from_row
+import building_normalizer as bn
 # Issues logic removed to keep this script EQC-only.
 
 
@@ -72,6 +73,8 @@ def eqc_summary_by_project(path: str, target: date, projects_filter: List[str] |
     # Read and clean using analysis_eqc helper, then augment with parsed dates
     df = EQC._read_and_clean(path)
     df = _drop_demo_rows(df)
+    # Normalize building names
+    df = bn.normalize_dataframe(df)
     # Normalize stage (already done in _read_and_clean), but ensure column exists
     if "__Stage" not in df.columns:
         checklist_cols = ["Eqc Type", "EQC Type", "Checklist", "Checklist Name", "__Checklist"]
