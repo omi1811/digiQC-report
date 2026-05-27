@@ -5,7 +5,29 @@
 *-Daily-digiQC-report_EQC_*.csv
 EQC_Weekly_Monthly_Cumulative_AllProjects.xlsx
 EQC_Daily_Report_*.xlsx
+Combined_EQC.csv
+Combined_Instructions.csv
 
-# Python cache
+# Python cache/build
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments and local tooling
+.venv/
+venv/
+env/
+.python-version
+
+# IDE/editor settings
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
